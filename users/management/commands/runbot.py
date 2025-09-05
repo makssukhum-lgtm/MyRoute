@@ -33,16 +33,20 @@ MY_PROFILE_BTN = "Мой профиль 👤"
 # Меню профиля
 CHANGE_ROLE_BTN = "Сменить роль ✏️"
 BACK_TO_MENU_BTN = "⬅️ Назад в главное меню"
+# Подтверждение
+CONFIRM_YES_BTN = "Да, сменить"
+CONFIRM_NO_BTN = "Нет, отмена"
 
 
 # --- Новая структура состояний ---
 (
     MAIN_MENU,
     PROFILE_MENU,
+    CONFIRMING_ROLE_CHANGE, # <-- НОВОЕ СОСТОЯНИЕ
     SELECTING_LANGUAGE,
     REQUESTING_PHONE,
     SELECTING_ROLE,
-) = range(5)
+) = range(6)
 
 # --- Функции для работы с БД (без изменений) ---
 def get_user(telegram_id):
@@ -108,7 +112,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return await start_registration(update, context)
 
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начинает именно процесс регистрации."""
+    # (Код без изменений)
     user_id = update.effective_user.id
     user_name = update.effective_user.full_name
     user = await get_user_async(user_id)
@@ -159,44 +163,77 @@ async def select_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     )
     return await show_main_menu(update, context)
 
-# --- НОВЫЕ ФУНКЦИИ для раздела "Мой профиль" ---
+# --- Функции для раздела "Мой профиль" ---
 async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Показывает информацию о профиле и кнопки для его редактирования."""
+    # (Код без изменений)
     user = await get_user_async(update.effective_user.id)
-    
-    # get_role_display() - это стандартный метод Django, который вернет "Пассажир" или "Водитель"
     role_text = user.get_role_display() 
-    
     profile_text = (
         f"👤 Ваш профиль:\n\n"
         f"<b>Имя:</b> {user.name}\n"
         f"<b>Телефон:</b> {user.phone_number}\n"
         f"<b>Роль:</b> {role_text}"
     )
-
     keyboard = [
         [KeyboardButton(CHANGE_ROLE_BTN)],
         [KeyboardButton(BACK_TO_MENU_BTN)],
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
     await update.message.reply_text(profile_text, parse_mode='HTML', reply_markup=reply_markup)
-    
     return PROFILE_MENU
 
-async def change_role_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Временная заглушка для смены роли."""
-    await update.message.reply_text("Функция смены роли находится в разработке.")
-    # Остаемся в том же меню профиля
-    return PROFILE_MENU
+# --- НОВЫЕ ФУНКЦИИ для смены роли ---
+async def change_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запрашивает подтверждение на смену роли."""
+    user = await get_user_async(update.effective_user.id)
+    
+    current_role_text = user.get_role_display()
+    
+    if user.role == User.Role.PASSENGER:
+        new_role_text = "Водитель"
+    else:
+        new_role_text = "Пассажир"
+
+    confirmation_text = (
+        f"Вы уверены, что хотите сменить вашу роль с "
+        f"<b>{current_role_text}</b> на <b>{new_role_text}</b>?"
+    )
+    
+    keyboard = [[KeyboardButton(CONFIRM_YES_BTN), KeyboardButton(CONFIRM_NO_BTN)]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+    
+    await update.message.reply_text(confirmation_text, parse_mode='HTML', reply_markup=reply_markup)
+    
+    return CONFIRMING_ROLE_CHANGE
+
+async def confirm_role_change(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает подтверждение смены роли."""
+    answer = update.message.text
+    if answer == CONFIRM_NO_BTN:
+        await update.message.reply_text("Смена роли отменена.")
+        return await my_profile(update, context) # Возвращаемся в профиль
+
+    user = await get_user_async(update.effective_user.id)
+    
+    if user.role == User.Role.PASSENGER:
+        new_role = User.Role.DRIVER
+    else:
+        new_role = User.Role.PASSENGER
+        
+    await update_user_role_async(user, new_role)
+    
+    await update.message.reply_text("Ваша роль успешно изменена!")
+    
+    # Показываем новое главное меню
+    return await show_main_menu(update, context)
 
 async def placeholder_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Временный обработчик для кнопок главного меню."""
+    # (Код без изменений)
     await update.message.reply_text(f"Вы нажали '{update.message.text}'. Эта функция находится в разработке.")
     return MAIN_MENU
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет диалог и показывает главное меню."""
+    # (Код без изменений)
     await update.message.reply_text("Действие отменено.")
     return await show_main_menu(update, context)
 
@@ -218,26 +255,30 @@ class Command(BaseCommand):
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", start)],
             states={
-                # Состояния регистрации
+                # Состояния регистрации (без изменений)
                 SELECTING_LANGUAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_language)],
                 REQUESTING_PHONE: [MessageHandler(filters.CONTACT, request_phone_number)],
                 SELECTING_ROLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_role)],
                 
-                # Состояние главного меню
+                # Состояние главного меню (без изменений)
                 MAIN_MENU: [
-                    MessageHandler(filters.Regex(f"^{MY_PROFILE_BTN}$"), my_profile), # <-- ЗАМЕНИЛИ ЗАГЛУШКУ
-                    # Остальные пока заглушки
+                    MessageHandler(filters.Regex(f"^{MY_PROFILE_BTN}$"), my_profile),
                     MessageHandler(filters.Regex(f"^{FIND_TRIP_BTN}$"), placeholder_handler),
                     MessageHandler(filters.Regex(f"^{MY_BOOKINGS_BTN}$"), placeholder_handler),
                     MessageHandler(filters.Regex(f"^{CREATE_TRIP_BTN}$"), placeholder_handler),
                     MessageHandler(filters.Regex(f"^{MY_TRIPS_BTN}$"), placeholder_handler),
                 ],
 
-                # НОВОЕ состояние для меню профиля
+                # Состояние меню профиля (ЗАМЕНИЛИ ЗАГЛУШКУ)
                 PROFILE_MENU: [
-                    MessageHandler(filters.Regex(f"^{CHANGE_ROLE_BTN}$"), change_role_placeholder),
-                    MessageHandler(filters.Regex(f"^{BACK_TO_MENU_BTN}$"), show_main_menu), # <-- Кнопка "Назад"
+                    MessageHandler(filters.Regex(f"^{CHANGE_ROLE_BTN}$"), change_role), # <-- ТЕПЕРЬ РАБОТАЕТ
+                    MessageHandler(filters.Regex(f"^{BACK_TO_MENU_BTN}$"), show_main_menu),
                 ],
+
+                # НОВОЕ состояние для подтверждения смены роли
+                CONFIRMING_ROLE_CHANGE: [
+                    MessageHandler(filters.Regex(f"^({CONFIRM_YES_BTN}|{CONFIRM_NO_BTN})$"), confirm_role_change),
+                ]
             },
             fallbacks=[CommandHandler("cancel", cancel)],
         )
