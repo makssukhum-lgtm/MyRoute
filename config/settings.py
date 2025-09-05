@@ -38,8 +38,9 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     # Наши приложения
-    'users.apps.UsersConfig', # Используем полный путь для лучшей практики
-    'trips.apps.TripsConfig'
+    'users.apps.UsersConfig',
+    'trips.apps.TripsConfig',
+    'support.apps.SupportConfig', # <-- Убедитесь, что эта строка есть
 ]
 
 MIDDLEWARE = [
