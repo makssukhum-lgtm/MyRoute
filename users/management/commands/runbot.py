@@ -4,7 +4,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from asgiref.sync import sync_to_async
 
-from django.db import transaction, models
+from django.db import transaction
 from django.core.management.base import BaseCommand
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -20,6 +20,7 @@ from telegram.ext import (
 
 from users.models import User
 from trips.models import Vehicle, Trip, Booking
+from support.models import SupportTicket
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -32,6 +33,7 @@ MY_BOOKINGS_BTN = "Мои бронирования 🗒️"
 CREATE_TRIP_BTN = "Создать поездку ➕"
 MY_TRIPS_BTN = "Мои поездки 🚕"
 MY_PROFILE_BTN = "Мой профиль 👤"
+SUPPORT_BTN = "Поддержка 💬"
 CHANGE_ROLE_BTN = "Сменить роль ✏️"
 BACK_TO_MENU_BTN = "⬅️ Назад в главное меню"
 CONFIRM_YES_BTN = "Да, сменить"
@@ -58,7 +60,8 @@ CONFIRM_NO_BTN = "Нет, отмена"
     FIND_TRIP_ENTERING_DESTINATION,
     FIND_TRIP_ENTERING_DATE,
     BOOK_TRIP_ENTERING_SEATS,
-) = range(19)
+    SUPPORT_ENTERING_MESSAGE,
+) = range(20)
 
 # --- Функции для работы с БД (users) ---
 def get_user(telegram_id):
@@ -144,6 +147,11 @@ def get_trips_for_driver(driver):
 def get_bookings_for_passenger(passenger):
     return list(passenger.bookings_as_passenger.select_related('trip__driver', 'trip__vehicle').order_by('-trip__departure_time'))
 
+# --- Функции для работы с БД (support) ---
+def create_support_ticket(user, message):
+    return SupportTicket.objects.create(user=user, message=message)
+
+
 # --- Асинхронные "обертки" ---
 get_user_async = sync_to_async(get_user, thread_sensitive=True)
 create_user_async = sync_to_async(create_user, thread_sensitive=True)
@@ -159,6 +167,8 @@ get_trip_by_id_async = sync_to_async(get_trip_by_id, thread_sensitive=True)
 create_booking_async = sync_to_async(create_booking, thread_sensitive=True)
 get_trips_for_driver_async = sync_to_async(get_trips_for_driver, thread_sensitive=True)
 get_bookings_for_passenger_async = sync_to_async(get_bookings_for_passenger, thread_sensitive=True)
+create_support_ticket_async = sync_to_async(create_support_ticket, thread_sensitive=True)
+
 
 # --- Основные обработчики (start, меню) ---
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -167,11 +177,12 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await start_registration(update, context)
 
     if user.role == User.Role.PASSENGER:
-        keyboard = [[FIND_TRIP_BTN], [MY_BOOKINGS_BTN, MY_PROFILE_BTN]]
+        keyboard = [[FIND_TRIP_BTN], [MY_BOOKINGS_BTN, MY_PROFILE_BTN], [SUPPORT_BTN]]
         menu_text = "Меню пассажира:"
     elif user.role == User.Role.DRIVER:
-        keyboard = [[CREATE_TRIP_BTN], [MY_TRIPS_BTN, MY_PROFILE_BTN]]
+        keyboard = [[CREATE_TRIP_BTN], [MY_TRIPS_BTN, MY_PROFILE_BTN], [SUPPORT_BTN]]
         menu_text = "Меню водителя:"
+        
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(menu_text, reply_markup=reply_markup)
     return MAIN_MENU
@@ -557,6 +568,26 @@ async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     return MAIN_MENU
 
+# --- Система поддержки ---
+async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "Опишите вашу проблему или вопрос одним сообщением. "
+        "Мы сохраним ваше обращение, и администратор свяжется с вами.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return SUPPORT_ENTERING_MESSAGE
+
+async def support_enter_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await get_user_async(update.effective_user.id)
+    message_text = update.message.text
+    
+    await create_support_ticket_async(user, message_text)
+    
+    await update.message.reply_text(
+        "Спасибо! Ваше обращение принято. Администратор скоро его рассмотрит."
+    )
+    return await show_main_menu(update, context)
+
 # --- Вспомогательные обработчики ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Действие отменено.")
@@ -591,6 +622,7 @@ class Command(BaseCommand):
                     MessageHandler(filters.Regex(f"^{FIND_TRIP_BTN}$"), find_trip_start),
                     MessageHandler(filters.Regex(f"^{MY_BOOKINGS_BTN}$"), my_bookings),
                     MessageHandler(filters.Regex(f"^{MY_TRIPS_BTN}$"), my_trips),
+                    MessageHandler(filters.Regex(f"^{SUPPORT_BTN}$"), support_start),
                     CallbackQueryHandler(book_trip_start, pattern="^book_trip_"),
                 ],
 
@@ -601,7 +633,6 @@ class Command(BaseCommand):
 
                 CONFIRMING_ROLE_CHANGE: [MessageHandler(filters.Regex(f"^({CONFIRM_YES_BTN}|{CONFIRM_NO_BTN})$"), confirm_role_change)],
                 
-                # ИСПРАВЛЕННЫЙ БЛОК ДЛЯ ВЫБОРА АВТОМОБИЛЯ
                 SELECTING_VEHICLE: [CallbackQueryHandler(trip_select_vehicle, pattern="^select_vehicle_")],
 
                 ADD_VEHICLE_ENTERING_BRAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_brand)],
@@ -619,6 +650,8 @@ class Command(BaseCommand):
                 FIND_TRIP_ENTERING_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_trip_enter_date)],
                 
                 BOOK_TRIP_ENTERING_SEATS: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_trip_enter_seats)],
+
+                SUPPORT_ENTERING_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_enter_message)],
             },
             fallbacks=[CommandHandler("cancel", cancel)],
             persistent=True,
