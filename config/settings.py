@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     # Наши приложения
     'users.apps.UsersConfig', # Используем полный путь для лучшей практики
+    'trips.apps.TripsConfig'
 ]
 
 MIDDLEWARE = [
