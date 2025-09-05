@@ -23,20 +23,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Константы для кнопок меню (чтобы избежать опечаток) ---
-# Пассажир
+# --- Константы для кнопок меню ---
+# Главное меню
 FIND_TRIP_BTN = "Найти поездку 🔍"
 MY_BOOKINGS_BTN = "Мои бронирования 🗒️"
-# Водитель
 CREATE_TRIP_BTN = "Создать поездку ➕"
 MY_TRIPS_BTN = "Мои поездки 🚕"
-# Общие
 MY_PROFILE_BTN = "Мой профиль 👤"
+# Меню профиля
+CHANGE_ROLE_BTN = "Сменить роль ✏️"
+BACK_TO_MENU_BTN = "⬅️ Назад в главное меню"
 
 
-# --- НОВАЯ СТРУКТУРА СОСТОЯНИЙ ---
-# Теперь у нас есть состояние для главного меню и для регистрации
-MAIN_MENU, SELECTING_LANGUAGE, REQUESTING_PHONE, SELECTING_ROLE = range(4)
+# --- Новая структура состояний ---
+(
+    MAIN_MENU,
+    PROFILE_MENU,
+    SELECTING_LANGUAGE,
+    REQUESTING_PHONE,
+    SELECTING_ROLE,
+) = range(5)
 
 # --- Функции для работы с БД (без изменений) ---
 def get_user(telegram_id):
@@ -74,10 +80,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Определяет роль пользователя, показывает меню и переходит в состояние MAIN_MENU."""
     user = await get_user_async(update.effective_user.id)
     
-    if not user:
-        await update.message.reply_text("Похоже, вы не зарегистрированы. Давайте это исправим!")
-        return await start_registration(update, context)
-
     if user.role == User.Role.PASSENGER:
         keyboard = [
             [KeyboardButton(FIND_TRIP_BTN)],
@@ -90,10 +92,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             [KeyboardButton(MY_TRIPS_BTN), KeyboardButton(MY_PROFILE_BTN)],
         ]
         menu_text = "Меню водителя:"
-    else:
-        await update.message.reply_text("Ваша роль не определена. Начнем регистрацию.")
-        return await start_registration(update, context)
-
+    
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(menu_text, reply_markup=reply_markup)
     return MAIN_MENU
@@ -121,71 +120,85 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text("Пожалуйста, выберите ваш язык:", reply_markup=reply_markup)
     return SELECTING_LANGUAGE
 
+# ... функции регистрации (select_language, request_phone_number, select_role) остаются без изменений ...
 async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # (Код без изменений)
-    language_map = {
-        "Русский 🇷🇺": "ru", "O'zbekcha 🇺🇿": "uz", "Тоҷикӣ 🇹🇯": "tj",
-    }
+    language_map = { "Русский 🇷🇺": "ru", "O'zbekcha 🇺🇿": "uz", "Тоҷикӣ 🇹🇯": "tj" }
     language_code = language_map.get(update.message.text)
     if not language_code:
         await update.message.reply_text("Пожалуйста, выберите язык с помощью кнопок.")
         return SELECTING_LANGUAGE
-
     user = await get_user_async(update.effective_user.id)
     await update_user_language_async(user, language_code)
-    
     keyboard = [[KeyboardButton("📱 Отправить мой номер телефона", request_contact=True)]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text("Спасибо! Теперь, пожалуйста, поделитесь вашим номером телефона.", reply_markup=reply_markup)
     return REQUESTING_PHONE
 
 async def request_phone_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # (Код без изменений, кроме одной проверки)
     contact = update.message.contact
     if not contact:
         await update.message.reply_text("Пожалуйста, используйте кнопку для отправки номера.")
         return REQUESTING_PHONE
-
     user = await get_user_async(update.effective_user.id)
     await update_user_phone_async(user, contact.phone_number)
-
     keyboard = [[KeyboardButton("Я Пассажир 🧍"), KeyboardButton("Я Водитель 🚕")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text("Отлично! Кем вы будете в нашем сервисе?", reply_markup=reply_markup)
     return SELECTING_ROLE
 
 async def select_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # (Код без изменений, кроме возвращаемого значения)
-    role_map = {
-        "Я Пассажир 🧍": User.Role.PASSENGER, "Я Водитель 🚕": User.Role.DRIVER,
-    }
+    role_map = { "Я Пассажир 🧍": User.Role.PASSENGER, "Я Водитель 🚕": User.Role.DRIVER }
     role = role_map.get(update.message.text)
     if not role:
         await update.message.reply_text("Пожалуйста, выберите роль с помощью кнопок.")
         return SELECTING_ROLE
-        
     user = await get_user_async(update.effective_user.id)
     await update_user_role_async(user, role)
-
     await update.message.reply_text(
         "Поздравляем! 🎉 Регистрация успешно завершена!", reply_markup=ReplyKeyboardRemove()
     )
     return await show_main_menu(update, context)
 
+# --- НОВЫЕ ФУНКЦИИ для раздела "Мой профиль" ---
+async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Показывает информацию о профиле и кнопки для его редактирования."""
+    user = await get_user_async(update.effective_user.id)
+    
+    # get_role_display() - это стандартный метод Django, который вернет "Пассажир" или "Водитель"
+    role_text = user.get_role_display() 
+    
+    profile_text = (
+        f"👤 Ваш профиль:\n\n"
+        f"<b>Имя:</b> {user.name}\n"
+        f"<b>Телефон:</b> {user.phone_number}\n"
+        f"<b>Роль:</b> {role_text}"
+    )
+
+    keyboard = [
+        [KeyboardButton(CHANGE_ROLE_BTN)],
+        [KeyboardButton(BACK_TO_MENU_BTN)],
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    await update.message.reply_text(profile_text, parse_mode='HTML', reply_markup=reply_markup)
+    
+    return PROFILE_MENU
+
+async def change_role_placeholder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Временная заглушка для смены роли."""
+    await update.message.reply_text("Функция смены роли находится в разработке.")
+    # Остаемся в том же меню профиля
+    return PROFILE_MENU
+
 async def placeholder_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Временный обработчик для кнопок, остается в том же состоянии."""
+    """Временный обработчик для кнопок главного меню."""
     await update.message.reply_text(f"Вы нажали '{update.message.text}'. Эта функция находится в разработке.")
     return MAIN_MENU
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет диалог и показывает главное меню, если пользователь зарегистрирован."""
-    user = await get_user_async(update.effective_user.id)
-    if user and user.role:
-        await update.message.reply_text("Действие отменено.")
-        return await show_main_menu(update, context)
-    else:
-        await update.message.reply_text("Регистрация отменена.", reply_markup=ReplyKeyboardRemove())
-        return ConversationHandler.END
+    """Отменяет диалог и показывает главное меню."""
+    await update.message.reply_text("Действие отменено.")
+    return await show_main_menu(update, context)
 
 
 class Command(BaseCommand):
@@ -202,7 +215,6 @@ class Command(BaseCommand):
 
         application = Application.builder().token(bot_token).build()
 
-        # --- НОВЫЙ ЕДИНЫЙ ОБРАБОТЧИК ДИАЛОГА ---
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", start)],
             states={
@@ -211,13 +223,20 @@ class Command(BaseCommand):
                 REQUESTING_PHONE: [MessageHandler(filters.CONTACT, request_phone_number)],
                 SELECTING_ROLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_role)],
                 
-                # Новое состояние для главного меню
+                # Состояние главного меню
                 MAIN_MENU: [
+                    MessageHandler(filters.Regex(f"^{MY_PROFILE_BTN}$"), my_profile), # <-- ЗАМЕНИЛИ ЗАГЛУШКУ
+                    # Остальные пока заглушки
                     MessageHandler(filters.Regex(f"^{FIND_TRIP_BTN}$"), placeholder_handler),
                     MessageHandler(filters.Regex(f"^{MY_BOOKINGS_BTN}$"), placeholder_handler),
                     MessageHandler(filters.Regex(f"^{CREATE_TRIP_BTN}$"), placeholder_handler),
                     MessageHandler(filters.Regex(f"^{MY_TRIPS_BTN}$"), placeholder_handler),
-                    MessageHandler(filters.Regex(f"^{MY_PROFILE_BTN}$"), placeholder_handler),
+                ],
+
+                # НОВОЕ состояние для меню профиля
+                PROFILE_MENU: [
+                    MessageHandler(filters.Regex(f"^{CHANGE_ROLE_BTN}$"), change_role_placeholder),
+                    MessageHandler(filters.Regex(f"^{BACK_TO_MENU_BTN}$"), show_main_menu), # <-- Кнопка "Назад"
                 ],
             },
             fallbacks=[CommandHandler("cancel", cancel)],
@@ -227,5 +246,4 @@ class Command(BaseCommand):
         
         self.stdout.write(self.style.SUCCESS("Бот успешно запущен! Нажмите Ctrl+C для остановки."))
         application.run_polling()
-
 
