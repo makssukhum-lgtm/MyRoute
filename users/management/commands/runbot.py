@@ -4,7 +4,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from asgiref.sync import sync_to_async
 
-from django.db import transaction
+from django.db import transaction, models
 from django.core.management.base import BaseCommand
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -118,24 +118,31 @@ def find_trips(departure, destination, search_date):
 
 def get_trip_by_id(trip_id):
     try:
-        return Trip.objects.get(id=trip_id)
+        return Trip.objects.select_related('driver', 'vehicle').get(id=trip_id)
     except Trip.DoesNotExist:
         return None
 
 @transaction.atomic
 def create_booking(passenger, trip, seats_to_book):
-    if trip.available_seats >= seats_to_book:
-        trip.available_seats -= seats_to_book
-        trip.save()
+    trip_for_update = Trip.objects.select_for_update().get(id=trip.id)
+    if trip_for_update.available_seats >= seats_to_book:
+        trip_for_update.available_seats -= seats_to_book
+        trip_for_update.save()
         booking = Booking.objects.create(
             passenger=passenger,
-            trip=trip,
+            trip=trip_for_update,
             seats_booked=seats_to_book
         )
         return booking, None
     else:
-        error_message = f"Недостаточно мест. Осталось только {trip.available_seats}."
+        error_message = f"Недостаточно мест. Осталось только {trip_for_update.available_seats}."
         return None, error_message
+
+def get_trips_for_driver(driver):
+    return list(driver.trips_as_driver.prefetch_related('bookings__passenger').order_by('-departure_time'))
+
+def get_bookings_for_passenger(passenger):
+    return list(passenger.bookings_as_passenger.select_related('trip__driver', 'trip__vehicle').order_by('-trip__departure_time'))
 
 # --- Асинхронные "обертки" ---
 get_user_async = sync_to_async(get_user, thread_sensitive=True)
@@ -150,8 +157,10 @@ create_trip_async = sync_to_async(create_trip, thread_sensitive=True)
 find_trips_async = sync_to_async(find_trips, thread_sensitive=True)
 get_trip_by_id_async = sync_to_async(get_trip_by_id, thread_sensitive=True)
 create_booking_async = sync_to_async(create_booking, thread_sensitive=True)
+get_trips_for_driver_async = sync_to_async(get_trips_for_driver, thread_sensitive=True)
+get_bookings_for_passenger_async = sync_to_async(get_bookings_for_passenger, thread_sensitive=True)
 
-# --- Основные обработчики (start, меню, профиль) ---
+# --- Основные обработчики (start, меню) ---
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user_async(update.effective_user.id)
     if not user or not user.role:
@@ -493,11 +502,62 @@ async def book_trip_enter_seats(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data.pop('booking_trip_id', None)
     return await show_main_menu(update, context)
 
-# --- Вспомогательные обработчики ---
-async def placeholder_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(f"Вы нажали '{update.message.text}'. Эта функция находится в разработке.")
+# --- "Мои поездки" и "Мои бронирования" ---
+async def my_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    driver = await get_user_async(update.effective_user.id)
+    trips = await get_trips_for_driver_async(driver)
+    
+    if not trips:
+        await update.message.reply_text("У вас пока нет созданных поездок.")
+        return MAIN_MENU
+        
+    await update.message.reply_text("Ваши созданные поездки:")
+    for trip in trips:
+        trip_info = (
+            f"<b>Маршрут:</b> {trip.departure_location} → {trip.destination_location}\n"
+            f"<b>Время:</b> {trip.departure_time.strftime('%d.%m.%Y в %H:%M')}\n"
+            f"<b>Авто:</b> {trip.vehicle}\n"
+            f"<b>Свободных мест:</b> {trip.available_seats}"
+        )
+        
+        passengers_info = []
+        for booking in trip.bookings.all():
+            passengers_info.append(
+                f" - {booking.passenger.name}, тел: {booking.passenger.phone_number} (мест: {booking.seats_booked})"
+            )
+        
+        if passengers_info:
+            trip_info += "\n\n<b>Забронировавшие пассажиры:</b>\n" + "\n".join(passengers_info)
+        else:
+            trip_info += "\n\n<i>Пассажиров пока нет.</i>"
+            
+        await update.message.reply_text(trip_info, parse_mode='HTML')
+        
     return MAIN_MENU
 
+async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    passenger = await get_user_async(update.effective_user.id)
+    bookings = await get_bookings_for_passenger_async(passenger)
+
+    if not bookings:
+        await update.message.reply_text("У вас пока нет активных бронирований.")
+        return MAIN_MENU
+
+    await update.message.reply_text("Ваши бронирования:")
+    for booking in bookings:
+        trip = booking.trip
+        booking_info = (
+            f"<b>Маршрут:</b> {trip.departure_location} → {trip.destination_location}\n"
+            f"<b>Время:</b> {trip.departure_time.strftime('%d.%m.%Y в %H:%M')}\n"
+            f"<b>Водитель:</b> {trip.driver.name}, тел: {trip.driver.phone_number}\n"
+            f"<b>Авто:</b> {trip.vehicle}\n"
+            f"<b>Вы забронировали:</b> {booking.seats_booked} мест(а)"
+        )
+        await update.message.reply_text(booking_info, parse_mode='HTML')
+
+    return MAIN_MENU
+
+# --- Вспомогательные обработчики ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Действие отменено.")
     return await show_main_menu(update, context)
@@ -529,10 +589,9 @@ class Command(BaseCommand):
                     MessageHandler(filters.Regex(f"^{MY_PROFILE_BTN}$"), my_profile),
                     MessageHandler(filters.Regex(f"^{CREATE_TRIP_BTN}$"), create_trip_start),
                     MessageHandler(filters.Regex(f"^{FIND_TRIP_BTN}$"), find_trip_start),
-                    MessageHandler(filters.Regex(f"^{MY_BOOKINGS_BTN}$"), placeholder_handler),
-                    MessageHandler(filters.Regex(f"^{MY_TRIPS_BTN}$"), placeholder_handler),
+                    MessageHandler(filters.Regex(f"^{MY_BOOKINGS_BTN}$"), my_bookings),
+                    MessageHandler(filters.Regex(f"^{MY_TRIPS_BTN}$"), my_trips),
                     CallbackQueryHandler(book_trip_start, pattern="^book_trip_"),
-                    CallbackQueryHandler(trip_select_vehicle, pattern="^select_vehicle_"),
                 ],
 
                 PROFILE_MENU: [
@@ -541,6 +600,9 @@ class Command(BaseCommand):
                 ],
 
                 CONFIRMING_ROLE_CHANGE: [MessageHandler(filters.Regex(f"^({CONFIRM_YES_BTN}|{CONFIRM_NO_BTN})$"), confirm_role_change)],
+                
+                # ИСПРАВЛЕННЫЙ БЛОК ДЛЯ ВЫБОРА АВТОМОБИЛЯ
+                SELECTING_VEHICLE: [CallbackQueryHandler(trip_select_vehicle, pattern="^select_vehicle_")],
 
                 ADD_VEHICLE_ENTERING_BRAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_brand)],
                 ADD_VEHICLE_ENTERING_MODEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_model)],
