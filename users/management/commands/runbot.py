@@ -1,9 +1,10 @@
 import os
 import logging
-from datetime import datetime, date
+from datetime import datetime
 from dotenv import load_dotenv
 from asgiref.sync import sync_to_async
 
+from django.db import transaction
 from django.core.management.base import BaseCommand
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -18,8 +19,7 @@ from telegram.ext import (
 )
 
 from users.models import User
-from trips.models import Vehicle, Trip
-from django.db.models import Q
+from trips.models import Vehicle, Trip, Booking
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -57,7 +57,8 @@ CONFIRM_NO_BTN = "Нет, отмена"
     FIND_TRIP_ENTERING_DEPARTURE,
     FIND_TRIP_ENTERING_DESTINATION,
     FIND_TRIP_ENTERING_DATE,
-) = range(18)
+    BOOK_TRIP_ENTERING_SEATS,
+) = range(19)
 
 # --- Функции для работы с БД (users) ---
 def get_user(telegram_id):
@@ -90,7 +91,6 @@ def add_vehicle(driver, brand, model, license_plate):
         driver=driver, brand=brand, model=model, license_plate=license_plate
     )
 
-# НОВАЯ, НАДЕЖНАЯ ФУНКЦИЯ ПОИСКА ПО ID
 def get_vehicle_by_id(vehicle_id):
     try:
         return Vehicle.objects.get(id=vehicle_id)
@@ -116,6 +116,27 @@ def find_trips(departure, destination, search_date):
         departure_time__gte=datetime.now()
     ).select_related('driver', 'vehicle'))
 
+def get_trip_by_id(trip_id):
+    try:
+        return Trip.objects.get(id=trip_id)
+    except Trip.DoesNotExist:
+        return None
+
+@transaction.atomic
+def create_booking(passenger, trip, seats_to_book):
+    if trip.available_seats >= seats_to_book:
+        trip.available_seats -= seats_to_book
+        trip.save()
+        booking = Booking.objects.create(
+            passenger=passenger,
+            trip=trip,
+            seats_booked=seats_to_book
+        )
+        return booking, None
+    else:
+        error_message = f"Недостаточно мест. Осталось только {trip.available_seats}."
+        return None, error_message
+
 # --- Асинхронные "обертки" ---
 get_user_async = sync_to_async(get_user, thread_sensitive=True)
 create_user_async = sync_to_async(create_user, thread_sensitive=True)
@@ -124,13 +145,14 @@ update_user_phone_async = sync_to_async(update_user_phone, thread_sensitive=True
 update_user_role_async = sync_to_async(update_user_role, thread_sensitive=True)
 get_vehicles_for_driver_async = sync_to_async(get_vehicles_for_driver, thread_sensitive=True)
 add_vehicle_async = sync_to_async(add_vehicle, thread_sensitive=True)
-get_vehicle_by_id_async = sync_to_async(get_vehicle_by_id, thread_sensitive=True) # <-- ИСПОЛЬЗУЕМ НОВУЮ ФУНКЦИЮ
+get_vehicle_by_id_async = sync_to_async(get_vehicle_by_id, thread_sensitive=True)
 create_trip_async = sync_to_async(create_trip, thread_sensitive=True)
 find_trips_async = sync_to_async(find_trips, thread_sensitive=True)
+get_trip_by_id_async = sync_to_async(get_trip_by_id, thread_sensitive=True)
+create_booking_async = sync_to_async(create_booking, thread_sensitive=True)
 
 # --- Основные обработчики (start, меню, профиль) ---
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     user = await get_user_async(update.effective_user.id)
     if not user or not user.role:
         return await start_registration(update, context)
@@ -146,17 +168,16 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return MAIN_MENU
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     telegram_user = update.effective_user
     user = await get_user_async(telegram_user.id)
     if user and user.role:
+        await update.message.reply_text(f"С возвращением, {telegram_user.first_name}!")
         return await show_main_menu(update, context)
     else:
         return await start_registration(update, context)
 
 # --- Регистрация ---
 async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     user_id = update.effective_user.id
     user_name = update.effective_user.full_name
     user = await get_user_async(user_id)
@@ -168,7 +189,6 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return SELECTING_LANGUAGE
 
 async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     language_map = {"Русский 🇷🇺": "ru", "O'zbekcha 🇺🇿": "uz", "Тоҷикӣ 🇹🇯": "tj"}
     language_code = language_map.get(update.message.text)
     if not language_code:
@@ -182,7 +202,6 @@ async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return REQUESTING_PHONE
 
 async def request_phone_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     contact = update.message.contact
     if not contact:
         await update.message.reply_text("Пожалуйста, используйте кнопку для отправки номера.")
@@ -195,7 +214,6 @@ async def request_phone_number(update: Update, context: ContextTypes.DEFAULT_TYP
     return SELECTING_ROLE
 
 async def select_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     role_map = {"Я Пассажир 🧍": User.Role.PASSENGER, "Я Водитель 🚕": User.Role.DRIVER}
     role = role_map.get(update.message.text)
     if not role:
@@ -208,7 +226,6 @@ async def select_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 # --- Профиль ---
 async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     user = await get_user_async(update.effective_user.id)
     role_text = user.get_role_display()
     profile_text = (f"👤 Ваш профиль:\n\n<b>Имя:</b> {user.name}\n<b>Телефон:</b> {user.phone_number}\n<b>Роль:</b> {role_text}")
@@ -216,8 +233,8 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(profile_text, parse_mode='HTML', reply_markup=reply_markup)
     return PROFILE_MENU
+
 async def change_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     user = await get_user_async(update.effective_user.id)
     current_role_text = user.get_role_display()
     new_role_text = "Водитель" if user.role == User.Role.PASSENGER else "Пассажир"
@@ -226,8 +243,8 @@ async def change_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
     await update.message.reply_text(confirmation_text, parse_mode='HTML', reply_markup=reply_markup)
     return CONFIRMING_ROLE_CHANGE
+
 async def confirm_role_change(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     answer = update.message.text
     if answer == CONFIRM_NO_BTN:
         await update.message.reply_text("Смена роли отменена.")
@@ -238,8 +255,7 @@ async def confirm_role_change(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("Ваша роль успешно изменена!")
     return await show_main_menu(update, context)
 
-
-# --- Создание поездки (ЛОГИКА ПОЛНОСТЬЮ ПЕРЕРАБОТАНА) ---
+# --- Создание поездки ---
 async def create_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user_async(update.effective_user.id)
     vehicles = await get_vehicles_for_driver_async(user)
@@ -252,7 +268,6 @@ async def create_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         return ADD_VEHICLE_ENTERING_BRAND
 
-    # ИСПОЛЬЗУЕМ INLINE-КНОПКИ С ID АВТОМОБИЛЯ
     keyboard = [
         [InlineKeyboardButton(str(v), callback_data=f"select_vehicle_{v.id}")]
         for v in vehicles
@@ -261,10 +276,9 @@ async def create_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text("Выберите автомобиль для поездки:", reply_markup=reply_markup)
     return SELECTING_VEHICLE
 
-# НОВЫЙ ОБРАБОТЧИК ДЛЯ INLINE-КНОПОК
 async def trip_select_vehicle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer() # Обязательно "отвечаем" на нажатие кнопки
+    await query.answer()
     
     vehicle_id = int(query.data.split("_")[-1])
     context.user_data['selected_vehicle_id'] = vehicle_id
@@ -293,7 +307,6 @@ async def add_vehicle_plate(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     model = context.user_data.get('vehicle_model')
     plate = update.message.text
     
-    # Создаем автомобиль и СРАЗУ ПОЛУЧАЕМ ЕГО ID
     new_vehicle = await add_vehicle_async(user, brand, model, plate)
     context.user_data['selected_vehicle_id'] = new_vehicle.id
     
@@ -316,7 +329,6 @@ async def trip_enter_destination(update: Update, context: ContextTypes.DEFAULT_T
 
 async def trip_enter_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
-        # Проверяем полный формат даты и времени
         time_obj = datetime.strptime(update.message.text, '%d.%m.%Y %H:%M')
         if time_obj < datetime.now():
              await update.message.reply_text("Нельзя создавать поездки в прошлом. Пожалуйста, введите будущую дату и время.")
@@ -351,7 +363,6 @@ async def trip_enter_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return CREATE_TRIP_ENTERING_PRICE
         
     user = await get_user_async(update.effective_user.id)
-    # ИЩЕМ АВТОМОБИЛЬ ПО ID - ЭТО НАДЕЖНО
     vehicle_id = context.user_data.get('selected_vehicle_id')
     vehicle = await get_vehicle_by_id_async(vehicle_id)
     
@@ -380,10 +391,8 @@ async def trip_enter_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(summary_text, parse_mode='HTML')
     return await show_main_menu(update, context)
 
-
 # --- Поиск поездки ---
 async def find_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     await update.message.reply_text(
         "Начинаем поиск поездки. Откуда вы хотите поехать? (например, Москва)",
         reply_markup=ReplyKeyboardRemove()
@@ -391,19 +400,16 @@ async def find_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return FIND_TRIP_ENTERING_DEPARTURE
 
 async def find_trip_enter_departure(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     context.user_data['find_departure'] = update.message.text
     await update.message.reply_text("Куда вы хотите поехать? (например, Санкт-Петербург)")
     return FIND_TRIP_ENTERING_DESTINATION
 
 async def find_trip_enter_destination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     context.user_data['find_destination'] = update.message.text
     await update.message.reply_text("На какую дату ищем? Введите в формате ДД.ММ.ГГГГ (например, 25.12.2025)")
     return FIND_TRIP_ENTERING_DATE
 
 async def find_trip_enter_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     try:
         search_date_obj = datetime.strptime(update.message.text, '%d.%m.%Y').date()
     except ValueError:
@@ -431,27 +437,76 @@ async def find_trip_enter_date(update: Update, context: ContextTypes.DEFAULT_TYP
             f"<b>Свободных мест:</b> {trip.available_seats}\n"
             f"<b>Цена:</b> {trip.price} руб."
         )
-        await update.message.reply_text(trip_info, parse_mode='HTML')
+        keyboard = [[InlineKeyboardButton("✅ Забронировать", callback_data=f"book_trip_{trip.id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(trip_info, parse_mode='HTML', reply_markup=reply_markup)
     
+    return await show_main_menu(update, context)
+
+# --- Бронирование поездки ---
+async def book_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    trip_id = int(query.data.split("_")[-1])
+    trip = await get_trip_by_id_async(trip_id)
+
+    if not trip or trip.available_seats == 0:
+        await query.edit_message_text("Извините, эта поездка уже недоступна или все места заняты.")
+        return MAIN_MENU
+    
+    context.user_data['booking_trip_id'] = trip_id
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"Вы выбрали поездку {trip.departure_location} - {trip.destination_location}.\n\n"
+             f"Сколько мест вы хотите забронировать? (Свободно: {trip.available_seats})",
+    )
+    return BOOK_TRIP_ENTERING_SEATS
+
+async def book_trip_enter_seats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        seats_to_book = int(update.message.text)
+        if seats_to_book <= 0: raise ValueError
+    except ValueError:
+        await update.message.reply_text("Пожалуйста, введите целое положительное число.")
+        return BOOK_TRIP_ENTERING_SEATS
+        
+    trip_id = context.user_data.get('booking_trip_id')
+    trip = await get_trip_by_id_async(trip_id)
+    passenger = await get_user_async(update.effective_user.id)
+    
+    if not trip or not passenger:
+        await update.message.reply_text("Произошла ошибка, не удалось найти поездку или ваш профиль.")
+        return await show_main_menu(update, context)
+
+    booking, error = await create_booking_async(passenger, trip, seats_to_book)
+
+    if error:
+        await update.message.reply_text(f"Ошибка бронирования: {error}")
+    else:
+        await update.message.reply_text(
+            f"✅ Поздравляем! Вы успешно забронировали {seats_to_book} мест(а)!\n\n"
+            f"С водителем можно будет связаться позже (эта функция в разработке)."
+        )
+
+    context.user_data.pop('booking_trip_id', None)
     return await show_main_menu(update, context)
 
 # --- Вспомогательные обработчики ---
 async def placeholder_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     await update.message.reply_text(f"Вы нажали '{update.message.text}'. Эта функция находится в разработке.")
     return MAIN_MENU
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    # ... (код без изменений) ...
     await update.message.reply_text("Действие отменено.")
     return await show_main_menu(update, context)
 
-
+# --- ГЛАВНЫЙ КЛАСС ЗАПУСКА ---
 class Command(BaseCommand):
     help = 'Запускает телеграм-бота'
 
     def handle(self, *args, **options):
-        # ... (код без изменений) ...
         self.stdout.write("Запуск телеграм-бота...")
         load_dotenv()
         bot_token = os.getenv("BOT_TOKEN")
@@ -476,6 +531,8 @@ class Command(BaseCommand):
                     MessageHandler(filters.Regex(f"^{FIND_TRIP_BTN}$"), find_trip_start),
                     MessageHandler(filters.Regex(f"^{MY_BOOKINGS_BTN}$"), placeholder_handler),
                     MessageHandler(filters.Regex(f"^{MY_TRIPS_BTN}$"), placeholder_handler),
+                    CallbackQueryHandler(book_trip_start, pattern="^book_trip_"),
+                    CallbackQueryHandler(trip_select_vehicle, pattern="^select_vehicle_"),
                 ],
 
                 PROFILE_MENU: [
@@ -484,9 +541,6 @@ class Command(BaseCommand):
                 ],
 
                 CONFIRMING_ROLE_CHANGE: [MessageHandler(filters.Regex(f"^({CONFIRM_YES_BTN}|{CONFIRM_NO_BTN})$"), confirm_role_change)],
-
-                # ИЗМЕНЕННЫЙ БЛОК: ТЕПЕРЬ МЫ ЖДЕМ НАЖАТИЯ INLINE-КНОПКИ
-                SELECTING_VEHICLE: [CallbackQueryHandler(trip_select_vehicle, pattern="^select_vehicle_")],
 
                 ADD_VEHICLE_ENTERING_BRAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_brand)],
                 ADD_VEHICLE_ENTERING_MODEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_model)],
@@ -501,6 +555,8 @@ class Command(BaseCommand):
                 FIND_TRIP_ENTERING_DEPARTURE: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_trip_enter_departure)],
                 FIND_TRIP_ENTERING_DESTINATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_trip_enter_destination)],
                 FIND_TRIP_ENTERING_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_trip_enter_date)],
+                
+                BOOK_TRIP_ENTERING_SEATS: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_trip_enter_seats)],
             },
             fallbacks=[CommandHandler("cancel", cancel)],
             persistent=True,
