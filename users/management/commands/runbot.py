@@ -20,7 +20,6 @@ from telegram.ext import (
 
 from users.models import User
 from trips.models import Vehicle, Trip, Booking
-from support.models import SupportTicket
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -116,7 +115,8 @@ def find_trips(departure, destination, search_date):
         departure_location__icontains=departure,
         destination_location__icontains=destination,
         departure_time__date=search_date,
-        departure_time__gte=datetime.now()
+        departure_time__gte=datetime.now(),
+        status=Trip.Status.ACTIVE # Ищем только активные поездки
     ).select_related('driver', 'vehicle'))
 
 def get_trip_by_id(trip_id):
@@ -147,6 +147,15 @@ def get_trips_for_driver(driver):
 def get_bookings_for_passenger(passenger):
     return list(passenger.bookings_as_passenger.select_related('trip__driver', 'trip__vehicle').order_by('-trip__departure_time'))
 
+def update_trip_status(trip_id, new_status):
+    try:
+        trip = Trip.objects.get(id=trip_id)
+        trip.status = new_status
+        trip.save()
+        return trip
+    except Trip.DoesNotExist:
+        return None
+        
 # --- Функции для работы с БД (support) ---
 def create_support_ticket(user, message):
     return SupportTicket.objects.create(user=user, message=message)
@@ -168,6 +177,7 @@ create_booking_async = sync_to_async(create_booking, thread_sensitive=True)
 get_trips_for_driver_async = sync_to_async(get_trips_for_driver, thread_sensitive=True)
 get_bookings_for_passenger_async = sync_to_async(get_bookings_for_passenger, thread_sensitive=True)
 create_support_ticket_async = sync_to_async(create_support_ticket, thread_sensitive=True)
+update_trip_status_async = sync_to_async(update_trip_status, thread_sensitive=True)
 
 
 # --- Основные обработчики (start, меню) ---
@@ -513,7 +523,7 @@ async def book_trip_enter_seats(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data.pop('booking_trip_id', None)
     return await show_main_menu(update, context)
 
-# --- "Мои поездки" и "Мои бронирования" ---
+# --- "Мои поездки" и Управление поездкой ---
 async def my_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     driver = await get_user_async(update.effective_user.id)
     trips = await get_trips_for_driver_async(driver)
@@ -522,30 +532,60 @@ async def my_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text("У вас пока нет созданных поездок.")
         return MAIN_MENU
         
-    await update.message.reply_text("Ваши созданные поездки:")
+    await update.message.reply_text("Ваши поездки:")
+    active_trips_found = False
     for trip in trips:
-        trip_info = (
-            f"<b>Маршрут:</b> {trip.departure_location} → {trip.destination_location}\n"
-            f"<b>Время:</b> {trip.departure_time.strftime('%d.%m.%Y в %H:%M')}\n"
-            f"<b>Авто:</b> {trip.vehicle}\n"
-            f"<b>Свободных мест:</b> {trip.available_seats}"
-        )
-        
-        passengers_info = []
-        for booking in trip.bookings.all():
-            passengers_info.append(
-                f" - {booking.passenger.name}, тел: {booking.passenger.phone_number} (мест: {booking.seats_booked})"
+        if trip.status == Trip.Status.ACTIVE:
+            active_trips_found = True
+            trip_info = (
+                f"<b>📍 Активна</b>\n"
+                f"<b>Маршрут:</b> {trip.departure_location} → {trip.destination_location}\n"
+                f"<b>Время:</b> {trip.departure_time.strftime('%d.%m.%Y в %H:%M')}\n"
+                f"<b>Авто:</b> {trip.vehicle}\n"
+                f"<b>Свободных мест:</b> {trip.available_seats}"
             )
-        
-        if passengers_info:
-            trip_info += "\n\n<b>Забронировавшие пассажиры:</b>\n" + "\n".join(passengers_info)
-        else:
-            trip_info += "\n\n<i>Пассажиров пока нет.</i>"
             
-        await update.message.reply_text(trip_info, parse_mode='HTML')
+            keyboard = [[
+                InlineKeyboardButton("✅ Завершить", callback_data=f"complete_trip_{trip.id}"),
+                InlineKeyboardButton("❌ Отменить", callback_data=f"cancel_trip_{trip.id}")
+            ]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(trip_info, parse_mode='HTML', reply_markup=reply_markup)
+    
+    if not active_trips_found:
+        await update.message.reply_text("У вас нет активных поездок для управления.")
         
     return MAIN_MENU
 
+async def complete_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    trip_id = int(query.data.split("_")[-1])
+    
+    trip = await update_trip_status_async(trip_id, Trip.Status.COMPLETED)
+    
+    if trip:
+        await query.edit_message_text(text=f"Поездка {trip} завершена.")
+    else:
+        await query.edit_message_text(text="Не удалось найти поездку.")
+        
+    return MAIN_MENU
+
+async def cancel_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    trip_id = int(query.data.split("_")[-1])
+
+    trip = await update_trip_status_async(trip_id, Trip.Status.CANCELED)
+
+    if trip:
+        await query.edit_message_text(text=f"Поездка {trip} отменена.")
+    else:
+        await query.edit_message_text(text="Не удалось найти поездку.")
+
+    return MAIN_MENU
+
+# --- "Мои бронирования" ---
 async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     passenger = await get_user_async(update.effective_user.id)
     bookings = await get_bookings_for_passenger_async(passenger)
@@ -624,6 +664,9 @@ class Command(BaseCommand):
                     MessageHandler(filters.Regex(f"^{MY_TRIPS_BTN}$"), my_trips),
                     MessageHandler(filters.Regex(f"^{SUPPORT_BTN}$"), support_start),
                     CallbackQueryHandler(book_trip_start, pattern="^book_trip_"),
+                    CallbackQueryHandler(trip_select_vehicle, pattern="^select_vehicle_"),
+                    CallbackQueryHandler(complete_trip, pattern="^complete_trip_"),
+                    CallbackQueryHandler(cancel_trip, pattern="^cancel_trip_"),
                 ],
 
                 PROFILE_MENU: [
@@ -633,8 +676,6 @@ class Command(BaseCommand):
 
                 CONFIRMING_ROLE_CHANGE: [MessageHandler(filters.Regex(f"^({CONFIRM_YES_BTN}|{CONFIRM_NO_BTN})$"), confirm_role_change)],
                 
-                SELECTING_VEHICLE: [CallbackQueryHandler(trip_select_vehicle, pattern="^select_vehicle_")],
-
                 ADD_VEHICLE_ENTERING_BRAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_brand)],
                 ADD_VEHICLE_ENTERING_MODEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_model)],
                 ADD_VEHICLE_ENTERING_PLATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_plate)],
@@ -662,4 +703,13 @@ class Command(BaseCommand):
         
         self.stdout.write(self.style.SUCCESS("Бот успешно запущен! Нажмите Ctrl+C для остановки."))
         application.run_polling()
+```
+5.  Сохраните изменения и закройте редактор (**Ctrl + X**, **Y**, **Enter**).
+
+#### **Задача 2.2: Перезапускаем бота**
+
+Теперь, когда код на сервере обновлен, перезапустим бота, чтобы он подхватил новые функции.
+
+```bash
+sudo supervisorctl restart bot
 
