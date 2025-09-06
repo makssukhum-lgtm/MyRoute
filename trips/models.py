@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from django.core.validators import MinValueValidator, MaxValueValidator
 
 class Vehicle(models.Model):
     driver = models.ForeignKey(
@@ -71,3 +72,32 @@ class Booking(models.Model):
     class Meta:
         verbose_name = 'Бронирование'
         verbose_name_plural = 'Бронирования'
+
+class Rating(models.Model):
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='ratings', verbose_name='Поездка')
+    rater = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='given_ratings',
+        verbose_name='Кто оценил'
+    )
+    rated_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='received_ratings',
+        verbose_name='Кого оценили'
+    )
+    score = models.PositiveSmallIntegerField(
+        'Оценка',
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    comment = models.TextField('Комментарий', blank=True, null=True)
+    created_at = models.DateTimeField('Дата оценки', auto_now_add=True)
+
+    def __str__(self):
+        return f"Оценка {self.score} от {self.rater.name} для {self.rated_user.name}"
+
+    class Meta:
+        verbose_name = 'Оценка'
+        verbose_name_plural = 'Оценки'
+        unique_together = ('trip', 'rater', 'rated_user')
