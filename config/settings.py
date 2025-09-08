@@ -15,17 +15,19 @@ ALLOWED_HOSTS = [
 ]
 
 INSTALLED_APPS = [
-    'jazzmin',
+    'daphne',
+    'jazzmin', # <-- Добавлена запятая (Comma added)
+    'channels',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    # Наши приложения
-    'users.apps.UsersConfig',
-    'trips.apps.TripsConfig',
-    'support.apps.SupportConfig',
+    # Ваши приложения
+    'users',
+    'trips',
+    'support', # Убедитесь, что support тоже здесь
 ]
 
 MIDDLEWARE = [
@@ -56,7 +58,20 @@ TEMPLATES = [
     },
 ]
 
+# Указываем ASGI как главный "вход" для сервера
+ASGI_APPLICATION = 'config.asgi.application'
+# Указываем WSGI как "запасной вход" для Gunicorn
 WSGI_APPLICATION = 'config.wsgi.application'
+
+# Настройки для Channels и Redis (наше "почтовое отделение")
+#CHANNEL_LAYERS = {
+#   "default": {
+#       "BACKEND": "channels_redis.core.RedisChannelLayer",
+#       "CONFIG": {
+#           "hosts": [("127.0.0.1", 6379)],
+#       },
+#   },
+#}
 
 DATABASES = {
     'default': {
@@ -88,14 +103,31 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 AUTH_USER_MODEL = 'users.User'
 
+# config/settings.py
+
 JAZZMIN_SETTINGS = {
+    # Заголовок окна в браузере
     "site_title": "MyRoute Admin",
+
+    # Текст в шапке
     "site_header": "MyRoute",
+
+    # Текст бренда (обычно то же, что и шапка)
     "site_brand": "MyRoute",
+
+    # Приветственное сообщение на экране входа
     "welcome_sign": "Добро пожаловать в панель управления MyRoute",
+
+    # Copyright в подвале
     "copyright": "MyRoute Ltd.",
+
+    # Порядок отображения приложений в меню
     "order_with_respect_to": ["users", "trips", "support", "auth"],
+
+    # Скрываем стандартную модель "Группы", так как мы ее не используем
     "hide_models": ["auth.group"],
+
+    # Настройки интерфейса
     "ui_tweaks": {
         "navbar_small_text": False,
         "footer_small_text": False,
@@ -115,12 +147,21 @@ JAZZMIN_SETTINGS = {
         "sidebar_nav_child_indent": False,
         "sidebar_nav_compact_style": False,
         "sidebar_nav_legacy_style": False,
-        "sidebar_nav_flat_style": True,
-        "theme": "darkly",
+        "sidebar_nav_flat_style": True, # Делает меню "плоским" и современным
+        "theme": "darkly", # Устанавливаем современную темную тему
         "dark_mode_theme": "darkly",
         "button_classes": {
-            "primary": "btn-primary", "secondary": "btn-secondary", "info": "btn-info",
-            "warning": "btn-warning", "danger": "btn-danger", "success": "btn-success"
+            "primary": "btn-primary",
+            "secondary": "btn-secondary",
+            "info": "btn-info",
+            "warning": "btn-warning",
+            "danger": "btn-danger",
+            "success": "btn-success"
         }
     }
 }
+
+ASGI_APPLICATION = 'config.asgi.application'
+
+import os
+BOT_TOKEN = os.getenv('BOT_TOKEN')

@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from datetime import datetime
 from dotenv import load_dotenv
 from asgiref.sync import sync_to_async
@@ -19,9 +20,12 @@ from telegram.ext import (
     PicklePersistence,
 )
 
+# Импорты для чата
+from channels.layers import get_channel_layer
 from users.models import User
 from trips.models import Vehicle, Trip, Booking, Rating
-from support.models import SupportTicket
+from support.models import SupportTicket, ChatMessage
+
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -202,6 +206,15 @@ update_trip_status_async = sync_to_async(update_trip_status, thread_sensitive=Tr
 add_rating_and_update_user_async = sync_to_async(add_rating_and_update_user, thread_sensitive=True)
 update_trip_field_async = sync_to_async(update_trip_field, thread_sensitive=True)
 get_booking_by_id_async = sync_to_async(get_booking_by_id, thread_sensitive=True)
+
+# --- НОВЫЕ АСИНХРОННЫЕ ОБЕРТКИ ДЛЯ ЧАТА ---
+@sync_to_async
+def get_last_open_ticket(user):
+    return SupportTicket.objects.filter(user=user, status=SupportTicket.Status.OPEN).last()
+
+@sync_to_async
+def save_user_message(ticket, user, message_text):
+    return ChatMessage.objects.create(ticket=ticket, author=user, message=message_text)
 
 
 # --- Основные обработчики ---
@@ -740,6 +753,30 @@ async def support_enter_message(update: Update, context: ContextTypes.DEFAULT_TY
     )
     return await show_main_menu(update, context)
 
+# --- НОВАЯ ФУНКЦИЯ-ОБРАБОТЧИК ДЛЯ ОТВЕТОВ В ЧАТЕ ---
+async def handle_support_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = await get_user_async(update.effective_user.id)
+    if not user:
+        return
+
+    ticket = await get_last_open_ticket(user)
+    if not ticket:
+        return
+
+    message_text = update.message.text
+    chat_message = await save_user_message(ticket, user, message_text)
+
+    channel_layer = get_channel_layer()
+    await channel_layer.group_send(
+        f'support_{ticket.id}',
+        {
+            'type': 'chat_message',
+            'message': chat_message.message,
+            'username': chat_message.author.name,
+            'timestamp': chat_message.timestamp.strftime("%d.%m.%Y %H:%M"),
+        }
+    )
+
 # --- Система рейтинга ---
 async def start_rating_process(bot, trip):
     driver = await get_user_async(trip.driver.telegram_id)
@@ -846,29 +883,32 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Действие отменено.")
     return await show_main_menu(update, context)
 
-# --- ГЛАВНЫЙ КЛАСС ЗАПУСКА ---
+
+# --- ИСПРАВЛЕННЫЙ КЛАСС ЗАПУСКА ---
 class Command(BaseCommand):
     help = 'Запускает телеграм-бота'
 
-    def handle(self, *args, **options):
-        self.stdout.write("Запуск телеграм-бота...")
+    async def main_bot_loop(self):
+        """Вся асинхронная логика бота находится здесь."""
+        self.stdout.write("Начинаю асинхронный запуск бота...")
+        
         load_dotenv()
         bot_token = os.getenv("BOT_TOKEN")
 
         if not bot_token:
             self.stderr.write(self.style.ERROR("Токен бота не найден."))
             return
-        
+
         persistence = PicklePersistence(filepath="bot_persistence")
         application = Application.builder().token(bot_token).persistence(persistence).build()
 
+        # --- РЕГИСТРАЦИЯ ВСЕХ ОБРАБОТЧИКОВ ---
         conv_handler = ConversationHandler(
             entry_points=[CommandHandler("start", start)],
             states={
                 SELECTING_LANGUAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_language)],
                 REQUESTING_PHONE: [MessageHandler(filters.CONTACT, request_phone_number)],
                 SELECTING_ROLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_role)],
-                
                 MAIN_MENU: [
                     MessageHandler(filters.Regex(f"^{MY_PROFILE_BTN}$"), my_profile),
                     MessageHandler(filters.Regex(f"^{CREATE_TRIP_BTN}$"), create_trip_start),
@@ -882,37 +922,27 @@ class Command(BaseCommand):
                     CallbackQueryHandler(edit_trip_start, pattern="^edit_trip_"),
                     CallbackQueryHandler(start_chat, pattern="^contact_user_"),
                 ],
-
                 PROFILE_MENU: [
                     MessageHandler(filters.Regex(f"^{CHANGE_ROLE_BTN}$"), change_role),
                     MessageHandler(filters.Regex(f"^{BACK_TO_MENU_BTN}$"), show_main_menu),
                 ],
-
                 CONFIRMING_ROLE_CHANGE: [MessageHandler(filters.Regex(f"^({CONFIRM_YES_BTN}|{CONFIRM_NO_BTN})$"), confirm_role_change)],
-                
                 SELECTING_VEHICLE: [CallbackQueryHandler(trip_select_vehicle, pattern="^select_vehicle_")],
-
                 ADD_VEHICLE_ENTERING_BRAND: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_brand)],
                 ADD_VEHICLE_ENTERING_MODEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_model)],
                 ADD_VEHICLE_ENTERING_PLATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_vehicle_plate)],
-
                 CREATE_TRIP_ENTERING_DEPARTURE: [MessageHandler(filters.TEXT & ~filters.COMMAND, trip_enter_departure)],
                 CREATE_TRIP_ENTERING_DESTINATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, trip_enter_destination)],
                 CREATE_TRIP_ENTERING_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, trip_enter_time)],
                 CREATE_TRIP_ENTERING_SEATS: [MessageHandler(filters.TEXT & ~filters.COMMAND, trip_enter_seats)],
                 CREATE_TRIP_ENTERING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, trip_enter_price)],
-
                 FIND_TRIP_ENTERING_DEPARTURE: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_trip_enter_departure)],
                 FIND_TRIP_ENTERING_DESTINATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_trip_enter_destination)],
                 FIND_TRIP_ENTERING_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, find_trip_enter_date)],
-                
                 BOOK_TRIP_ENTERING_SEATS: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_trip_enter_seats)],
-
                 SUPPORT_ENTERING_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, support_enter_message)],
-
                 EDIT_TRIP_SELECT_FIELD: [CallbackQueryHandler(edit_trip_select_field, pattern="^edit_field_")],
                 EDIT_TRIP_ENTERING_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_trip_enter_value)],
-
                 IN_CHAT: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, forward_message),
                     CommandHandler("cancel", cancel_chat),
@@ -922,12 +952,24 @@ class Command(BaseCommand):
             persistent=True,
             name="main_conversation"
         )
-        
         application.add_handler(conv_handler)
-        
-        # Отдельный обработчик для рейтинга
         application.add_handler(CallbackQueryHandler(handle_rating, pattern="^rate_"))
+        # Обработчик для ответов в чате поддержки. Добавляем его с низким приоритетом.
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_support_reply), group=1)
 
-        
         self.stdout.write(self.style.SUCCESS("Бот успешно запущен! Нажмите Ctrl+C для остановки."))
-        application.run_polling()
+        
+        await application.initialize()
+        await application.updater.start_polling()
+        await application.start()
+        
+        await asyncio.Event().wait()
+
+    def handle(self, *args, **options):
+        """Синхронный метод, который Django умеет запускать."""
+        self.stdout.write("Запуск телеграм-бота...")
+        try:
+            # Правильно запускаем асинхронную функцию из синхронной
+            asyncio.run(self.main_bot_loop())
+        except KeyboardInterrupt:
+            self.stdout.write(self.style.SUCCESS("\nОстановка бота..."))

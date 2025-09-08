@@ -1,0 +1,38 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{% static 'css/style.css' %}">
+    <title>{% block title %}MyRoute{% endblock %}</title>
+</head>
+<body>
+    <header class="site-header">
+        <div class="container">
+            <nav>
+                <a href="/" class="logo">
+                    <svg viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"></path></svg>
+                    MyRoute
+                </a>
+                <div class="nav-links">
+                    <a href="#">Найти поездку</a>
+                    <a href="#">Стать водителем</a>
+                    <a href="#">Поддержка</a>
+                    <a href="/admin/" class="btn-login">Вход</a>
+                </div>
+            </nav>
+        </div>
+    </header>
+    <main>
+        {% block content %}
+        {% endblock %}
+    </main>
+    <footer class="site-footer">
+        <div class="container">
+            <p>&copy; 2025 MyRoute Ltd. Все права защищены.</p>
+            <p><a href="#">Правила сервиса</a> | <a href="#">Политика конфиденциальности</a></p>
+        </div>
+    </footer>
+</body>
+</html>
