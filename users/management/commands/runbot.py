@@ -3,8 +3,8 @@ import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from asgiref.sync import sync_to_async
+from django.db import transaction, models, IntegrityError
 
-from django.db import transaction, models
 from django.utils import timezone
 from django.core.management.base import BaseCommand
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
@@ -40,6 +40,108 @@ BACK_TO_MENU_BTN = "⬅️ Назад в главное меню"
 CONFIRM_YES_BTN = "Да, сменить"
 CONFIRM_NO_BTN = "Нет, отмена"
 TRIP_HISTORY_BTN = "История поездок 📜"  # Новая кнопка
+
+# --- Система локализации ---
+TRANSLATIONS = {
+    'ru': {
+        'select_language': "Пожалуйста, выберите ваш язык:",
+        'share_phone': "Спасибо! Теперь, пожалуйста, поделитесь вашим номером телефона.",
+        'select_role': "Отлично! Кем вы будете в нашем сервисе?",
+        'driver_pending': "Спасибо! Ваша заявка на роль водителя принята и отправлена на проверку. Мы сообщим вам, когда она будет одобрена.",
+        'registration_complete': "Поздравляем! 🎉 Регистрация успешно завершена!",
+        'profile_menu': "👤 Ваш профиль:\n\n<b>Имя:</b> {name}\n<b>Телефон:</b> {phone}\n<b>Роль:</b> {role}\n<b>Рейтинг:</b> {rating}",
+        'change_role_confirm': "Вы уверены, что хотите сменить вашу роль с <b>{current}</b> на <b>{new}</b>?",
+        'role_changed': "Ваша роль успешно изменена!",
+        'role_change_cancelled': "Смена роли отменена.",
+        'no_vehicles': "У вас еще нет добавленных автомобилей. Давайте сначала добавим ваш транспорт.\n\nВведите марку автомобиля (например, Kia):",
+        'select_vehicle': "Выберите автомобиль для поездки:",
+        'vehicle_selected': "Автомобиль выбран. Теперь начнем создание поездки.",
+        'enter_departure': "Откуда вы отправляетесь? (например, Краснодар)",
+        'enter_destination': "Куда вы поедете? (например, Москва)",
+        'enter_time': "Когда? Введите дату и время отправления в формате ДД.ММ.ГГГГ ЧЧ:ММ (например, 15.09.2025 18:00)",
+        'enter_seats': "Сколько свободных мест для пассажиров? (введите число)",
+        'enter_price': "Укажите цену за одно место в рублях (введите число):",
+        'trip_created': "✅ Поездка успешно создана!\n\n<b>Маршрут:</b> {departure} → {destination}\n<b>Время:</b> {time}\n<b>Авто:</b> {vehicle}\n<b>Мест:</b> {seats}\n<b>Цена:</b> {price} руб./место",
+        'invalid_time_past': "Нельзя создавать поездки в прошлом. Пожалуйста, введите будущую дату и время.",
+        'invalid_format_time': "Неверный формат. Пожалуйста, введите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ",
+        'invalid_seats': "Пожалуйста, введите целое положительное число от 1 до 7.",
+        'invalid_price': "Пожалуйста, введите положительное число не менее 50.",
+        'vehicle_added': "Автомобиль {brand} {model} ({plate}) успешно добавлен!\n\nТеперь давайте создадим поездку.\nОткуда вы отправляетесь? (например, Краснодар)",
+        'find_trip_start': "Начинаем поиск поездки. Откуда вы хотите поехать? (например, Москва)",
+        'find_trip_destination': "Куда вы хотите поехать? (например, Санкт-Петербург)",
+        'find_trip_date': "На какую дату ищем? Введите в формате ДД.ММ.ГГГГ (например, 25.12.2025)",
+        'searching_trips': "Ищу поездки из г. {departure} в г. {destination} на {date}...",
+        'no_trips_found': "К сожалению, на эту дату поездок не найдено. Попробуйте поискать на другую дату.",
+        'trips_found': "Вот что удалось найти:",
+        'trip_info': "<b>Водитель:</b> {driver} ({rating})\n<b>Маршрут:</b> {dep} → {dest}\n<b>Время:</b> {time}\n<b>Авто:</b> {vehicle}\n<b>Свободных мест:</b> {seats}\n<b>Цена:</b> {price} руб.",
+        'invalid_date_format': "Неверный формат. Пожалуйста, введите дату в формате ДД.ММ.ГГГГ",
+        'book_trip_unavailable': "Извините, эта поездка уже недоступна, завершена или все места заняты.",
+        'select_seats_for_booking': "Вы выбрали поездку {dep} - {dest}.\n\nСколько мест вы хотите забронировать? (Свободно: {seats})",
+        'invalid_seats_booking': "Пожалуйста, введите целое положительное число.",
+        'booking_error': "Ошибка бронирования: {error}",
+        'booking_success': "✅ Поздравляем! Вы успешно забронировали {seats} мест(а)!\nОбщая стоимость: {cost} руб.",
+        'driver_notification': "🔔 Новое бронирование!\n\nПассажир: {passenger} ({phone})\nЗабронировал(а) мест: {seats}\nПоездка: {trip}",
+        'no_trips': "У вас пока нет созданных поездок.",
+        'my_trips': "Ваши активные поездки:",
+        'no_active_trips': "У вас нет активных поездок для управления.",
+        'trip_active_info': "<b>📍 Активна</b>\n<b>Маршрут:</b> {dep} → {dest}\n<b>Время:</b> {time}\n<b>Свободных мест:</b> {seats}\n<b>Цена:</b> {price} руб./место",
+        'trip_completed': "Поездка {trip} завершена.",
+        'trip_cancelled': "Поездка {trip} отменена.",
+        'trip_not_found': "Не удалось найти поездку.",
+        'no_bookings': "У вас пока нет активных бронирований.",
+        'my_bookings': "Ваши активные бронирования:",
+        'booking_info': "<b>Маршрут:</b> {dep} → {dest}\n<b>Время:</b> {time}\n<b>Водитель:</b> {driver}, тел: {phone}\n<b>Авто:</b> {vehicle}\n<b>Забронировано мест:</b> {seats}\n<b>Общая стоимость:</b> {cost} руб.",
+        'no_history': "У вас нет поездок в истории.",
+        'trip_history': "История ваших поездок:",
+        'history_completed': "✅ Завершена",
+        'history_cancelled': "❌ Отменена",
+        'history_trip_info': "<b>{status}</b>\n<b>Маршрут:</b> {dep} → {dest}\n<b>Время:</b> {time}\n<b>Авто:</b> {vehicle}\n<b>Мест:</b> {seats}\n<b>Цена:</b> {price} руб./место",
+        'history_booking_info': "<b>{status}</b>\n<b>Маршрут:</b> {dep} → {dest}\n<b>Время:</b> {time}\n<b>Водитель:</b> {driver}, тел: {phone}\n<b>Авто:</b> {vehicle}\n<b>Забронировано мест:</b> {seats}\n<b>Общая стоимость:</b> {cost} руб.",
+        'select_field_to_edit': "Что вы хотите изменить?",
+        'enter_new_value': "Пожалуйста, введите {prompt}:",
+        'invalid_value': "Неверный формат. Пожалуйста, попробуйте еще раз.",
+        'past_date_error': "Нельзя установить дату в прошлом. Попробуйте еще раз.",
+        'edit_success': "✅ Данные поездки успешно обновлены!",
+        'edit_error': "Ошибка: данные для редактирования не найдены.",
+        'support_start': "Опишите вашу проблему или вопрос одним сообщением. Мы сохраним ваше обращение, и администратор свяжется с вами.",
+        'support_message_too_long': "Ваше сообщение слишком длинное (максимум 1000 символов). Пожалуйста, сократите его.",
+        'support_submitted': "Спасибо! Ваше обращение принято. Администратор скоро его рассмотрит.",
+        'rate_driver': "Поездка с водителем {driver} завершена. Пожалуйста, оцените его:",
+        'rate_passenger': "Пожалуйста, оцените поездку с пассажиром {passenger}:",
+        'rating_thanks': "Спасибо! Вы поставили оценку {score} ⭐ пользователю {user}.",
+        'already_rated': "Вы уже оценили этого пользователя за эту поездку.",
+        'chat_started': "Вы вошли в чат с {role} {name}.\nВсе, что вы напишете, будет переслано. Чтобы выйти, отправьте /cancel.",
+        'chat_error': "Ошибка: бронирование не найдено.",
+        'not_participant': "Ошибка: вы не участник этого бронирования.",
+        'chat_not_initialized': "Ошибка: чат не инициализирован.",
+        'message_too_long': "Сообщение слишком длинное (максимум 1000 символов). Пожалуйста, сократите его.",
+        'message_sent': "Сообщение отправлено!",
+        'chat_cancelled': "Чат завершен.",
+        'action_cancelled': "Действие отменено.",
+        'unverified_driver': "Ваш аккаунт водителя еще не прошел проверку. Пожалуйста, дождитесь одобрения от администрации.",
+        'critical_error_vehicle': "Критическая ошибка: автомобиль не найден по ID. Пожалуйста, попробуйте создать поездку заново.",
+        'conflict_error': "Этот автомобиль уже используется в другой активной поездке в указанное время.",
+        'invalid_language': "Пожалуйста, выберите язык с помощью кнопок.",
+        'welcome_back': "С возвращением, {name}!",
+        'passenger_menu': "Меню пассажира:",
+        'driver_menu': "Меню водителя:",
+    },
+    'uz': {
+        # Здесь добавить переводы на узбекский, для примера оставим заглушки
+        'select_language': "Iltimos, tilingizni tanlang:",
+        # ... и так далее для всех ключей
+    },
+    'tj': {
+        # Здесь добавить переводы на таджикский
+        'select_language': "Лутфан, забонро интихоб кунед:",
+        # ... и так далее
+    }
+}
+
+def get_text(user, key, **kwargs):
+    lang = user.language if user and user.language in TRANSLATIONS else 'ru'
+    text = TRANSLATIONS[lang].get(key, TRANSLATIONS['ru'][key])
+    return text.format(**kwargs) if kwargs else text
 
 # --- Состояния ---
 (
@@ -111,6 +213,15 @@ def get_vehicle_by_id(vehicle_id):
 
 def create_trip(driver, vehicle, departure, destination, time, seats, price):
     aware_time = timezone.make_aware(time, timezone.get_current_timezone())
+    # Проверка на конфликт расписания
+    conflicting_trips = Trip.objects.filter(
+        vehicle=vehicle,
+        status=Trip.Status.ACTIVE,
+        departure_time__range=(aware_time - timezone.timedelta(hours=2), aware_time + timezone.timedelta(hours=2))
+    )
+    if conflicting_trips.exists():
+        raise ValueError("conflict_error")
+    
     return Trip.objects.create(
         driver=driver, vehicle=vehicle, departure_location=departure, destination_location=destination,
         departure_time=aware_time, available_seats=seats, price=price
@@ -137,6 +248,8 @@ def get_booking_by_id(booking_id):
 @transaction.atomic
 def create_booking(passenger, trip, seats_to_book):
     trip_for_update = Trip.objects.select_for_update().get(id=trip.id)
+    if trip_for_update.status != Trip.Status.ACTIVE:
+        return None, "booking_unavailable"
     if trip_for_update.available_seats >= seats_to_book:
         trip_for_update.available_seats -= seats_to_book
         trip_for_update.save()
@@ -166,7 +279,11 @@ def update_trip_status(trip_id, new_status):
 
 @transaction.atomic
 def add_rating_and_update_user(rater, rated_user, trip, score):
-    Rating.objects.create(rater=rater, rated_user=rated_user, trip=trip, score=score)
+    try:
+        Rating.objects.create(rater=rater, rated_user=rated_user, trip=trip, score=score)
+    except IntegrityError:
+        logger.warning(f"Attempt to add duplicate rating by {rater.id} for {rated_user.id} on trip {trip.id}")
+        raise
     user_to_update = User.objects.select_for_update().get(id=rated_user.id)
     all_ratings = user_to_update.received_ratings.all()
     new_rating_count = all_ratings.count()
@@ -213,12 +330,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not user or not user.role:
         return await start_registration(update, context)
 
+    menu_text = get_text(user, 'passenger_menu' if user.role == User.Role.PASSENGER else 'driver_menu')
     if user.role == User.Role.PASSENGER:
         keyboard = [[FIND_TRIP_BTN], [MY_BOOKINGS_BTN, TRIP_HISTORY_BTN], [MY_PROFILE_BTN], [SUPPORT_BTN]]
-        menu_text = "Меню пассажира:"
     elif user.role == User.Role.DRIVER:
         keyboard = [[CREATE_TRIP_BTN], [MY_TRIPS_BTN, TRIP_HISTORY_BTN], [MY_PROFILE_BTN], [SUPPORT_BTN]]
-        menu_text = "Меню водителя:"
         
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(menu_text, reply_markup=reply_markup)
@@ -228,7 +344,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     telegram_user = update.effective_user
     user = await get_user_async(telegram_user.id)
     if user and user.role:
-        await update.message.reply_text(f"С возвращением, {telegram_user.first_name}!")
+        welcome_text = get_text(user, 'welcome_back', name=telegram_user.first_name)
+        await update.message.reply_text(welcome_text)
         return await show_main_menu(update, context)
     else:
         return await start_registration(update, context)
@@ -240,49 +357,67 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = await get_user_async(user_id)
     if not user:
         await create_user_async(user_id, user_name)
+    user = await get_user_async(user_id)  # Refresh user
+    # Автоматическое определение языка, если не выбран
+    if not user.language:
+        lang_code = update.effective_user.language_code
+        if lang_code in ['ru', 'uz', 'tg']:  # tg for Tajik
+            await update_user_language_async(user, lang_code)
+    
     keyboard = [[KeyboardButton("Русский 🇷🇺"), KeyboardButton("O'zbekcha 🇺🇿"), KeyboardButton("Тоҷикӣ 🇹🇯")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-    await update.message.reply_text("Пожалуйста, выберите ваш язык:", reply_markup=reply_markup)
+    lang_text = get_text(user, 'select_language')
+    await update.message.reply_text(lang_text, reply_markup=reply_markup)
     return SELECTING_LANGUAGE
 
 async def select_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     language_map = {"Русский 🇷🇺": "ru", "O'zbekcha 🇺🇿": "uz", "Тоҷикӣ 🇹🇯": "tj"}
     language_code = language_map.get(update.message.text)
     if not language_code:
-        await update.message.reply_text("Пожалуйста, выберите язык с помощью кнопок.")
+        user = await get_user_async(update.effective_user.id)
+        lang_text = get_text(user, 'invalid_language')
+        await update.message.reply_text(lang_text)
         return SELECTING_LANGUAGE
     user = await get_user_async(update.effective_user.id)
     await update_user_language_async(user, language_code)
     keyboard = [[KeyboardButton("📱 Отправить мой номер телефона", request_contact=True)]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-    await update.message.reply_text("Спасибо! Теперь, пожалуйста, поделитесь вашим номером телефона.", reply_markup=reply_markup)
+    phone_text = get_text(user, 'share_phone')
+    await update.message.reply_text(phone_text, reply_markup=reply_markup)
     return REQUESTING_PHONE
 
 async def request_phone_number(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     contact = update.message.contact
     if not contact:
-        await update.message.reply_text("Пожалуйста, используйте кнопку для отправки номера.")
+        user = await get_user_async(update.effective_user.id)
+        phone_text = get_text(user, 'share_phone')
+        await update.message.reply_text(phone_text)
         return REQUESTING_PHONE
     user = await get_user_async(update.effective_user.id)
     await update_user_phone_async(user, contact.phone_number)
     keyboard = [[KeyboardButton("Я Пассажир 🧍"), KeyboardButton("Я Водитель 🚕")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-    await update.message.reply_text("Отлично! Кем вы будете в нашем сервисе?", reply_markup=reply_markup)
+    role_text = get_text(user, 'select_role')
+    await update.message.reply_text(role_text, reply_markup=reply_markup)
     return SELECTING_ROLE
 
 async def select_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     role_map = {"Я Пассажир 🧍": User.Role.PASSENGER, "Я Водитель 🚕": User.Role.DRIVER}
     role = role_map.get(update.message.text)
     if not role:
-        await update.message.reply_text("Пожалуйста, выберите роль с помощью кнопок.")
+        user = await get_user_async(update.effective_user.id)
+        role_text = get_text(user, 'select_role')
+        await update.message.reply_text(role_text)
         return SELECTING_ROLE
     user = await get_user_async(update.effective_user.id)
     await update_user_role_async(user, role)
     
     if role == User.Role.DRIVER:
-        await update.message.reply_text("Спасибо! Ваша заявка на роль водителя принята и отправлена на проверку. Мы сообщим вам, когда она будет одобрена.", reply_markup=ReplyKeyboardRemove())
+        pending_text = get_text(user, 'driver_pending')
+        await update.message.reply_text(pending_text, reply_markup=ReplyKeyboardRemove())
     else:
-        await update.message.reply_text("Поздравляем! 🎉 Регистрация успешно завершена!", reply_markup=ReplyKeyboardRemove())
+        complete_text = get_text(user, 'registration_complete')
+        await update.message.reply_text(complete_text, reply_markup=ReplyKeyboardRemove())
         
     return await show_main_menu(update, context)
 
@@ -291,7 +426,7 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user_async(update.effective_user.id)
     role_text = user.get_role_display()
     rating_text = f"{user.average_rating:.1f} ⭐ ({user.rating_count} оценок)"
-    profile_text = (f"👤 Ваш профиль:\n\n<b>Имя:</b> {user.name}\n<b>Телефон:</b> {user.phone_number}\n<b>Роль:</b> {role_text}\n<b>Рейтинг:</b> {rating_text}")
+    profile_text = get_text(user, 'profile_menu', name=user.name, phone=user.phone_number, role=role_text, rating=rating_text)
     keyboard = [[CHANGE_ROLE_BTN], [BACK_TO_MENU_BTN]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(profile_text, parse_mode='HTML', reply_markup=reply_markup)
@@ -301,21 +436,24 @@ async def change_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     user = await get_user_async(update.effective_user.id)
     current_role_text = user.get_role_display()
     new_role_text = "Водитель" if user.role == User.Role.PASSENGER else "Пассажир"
-    confirmation_text = (f"Вы уверены, что хотите сменить вашу роль с <b>{current_role_text}</b> на <b>{new_role_text}</b>?")
+    confirm_text = get_text(user, 'change_role_confirm', current=current_role_text, new=new_role_text)
     keyboard = [[CONFIRM_YES_BTN, CONFIRM_NO_BTN]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text(confirmation_text, parse_mode='HTML', reply_markup=reply_markup)
+    await update.message.reply_text(confirm_text, parse_mode='HTML', reply_markup=reply_markup)
     return CONFIRMING_ROLE_CHANGE
 
 async def confirm_role_change(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     answer = update.message.text
     if answer == CONFIRM_NO_BTN:
-        await update.message.reply_text("Смена роли отменена.")
+        user = await get_user_async(update.effective_user.id)
+        cancel_text = get_text(user, 'role_change_cancelled')
+        await update.message.reply_text(cancel_text)
         return await my_profile(update, context)
     user = await get_user_async(update.effective_user.id)
     new_role = User.Role.DRIVER if user.role == User.Role.PASSENGER else User.Role.PASSENGER
     await update_user_role_async(user, new_role)
-    await update.message.reply_text("Ваша роль успешно изменена!")
+    changed_text = get_text(user, 'role_changed')
+    await update.message.reply_text(changed_text)
     return await show_main_menu(update, context)
 
 # --- Создание поездки ---
@@ -323,21 +461,23 @@ async def create_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user = await get_user_async(update.effective_user.id)
     
     if user.verification_status != User.VerificationStatus.VERIFIED:
-        await update.message.reply_text("Ваш аккаунт водителя еще не прошел проверку. Пожалуйста, дождитесь одобрения от администрации.")
+        unverified_text = get_text(user, 'unverified_driver')
+        await update.message.reply_text(unverified_text)
         return MAIN_MENU
 
     vehicles = await get_vehicles_for_driver_async(user)
     if not vehicles:
+        no_vehicles_text = get_text(user, 'no_vehicles')
         await update.message.reply_text(
-            "У вас еще нет добавленных автомобилей. Давайте сначала добавим ваш транспорт.\n\n"
-            "Введите марку автомобиля (например, Kia):",
+            no_vehicles_text,
             reply_markup=ReplyKeyboardRemove()
         )
         return ADD_VEHICLE_ENTERING_BRAND
 
     keyboard = [[InlineKeyboardButton(str(v), callback_data=f"select_vehicle_{v.id}")] for v in vehicles]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выберите автомобиль для поездки:", reply_markup=reply_markup)
+    select_vehicle_text = get_text(user, 'select_vehicle')
+    await update.message.reply_text(select_vehicle_text, reply_markup=reply_markup)
     return SELECTING_VEHICLE
 
 async def trip_select_vehicle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -347,22 +487,28 @@ async def trip_select_vehicle(update: Update, context: ContextTypes.DEFAULT_TYPE
     vehicle_id = int(query.data.split("_")[-1])
     context.user_data['selected_vehicle_id'] = vehicle_id
     
-    await query.edit_message_text(text=f"Автомобиль выбран. Теперь начнем создание поездки.")
+    user = await get_user_async(update.effective_user.id)
+    selected_text = get_text(user, 'vehicle_selected')
+    await query.edit_message_text(text=selected_text)
+    departure_text = get_text(user, 'enter_departure')
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="Откуда вы отправляетесь? (например, Краснодар)",
+        text=departure_text,
         reply_markup=ReplyKeyboardRemove()
     )
     return CREATE_TRIP_ENTERING_DEPARTURE
 
 async def add_vehicle_brand(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['vehicle_brand'] = update.message.text
-    await update.message.reply_text("Отлично! Теперь введите модель (например, Rio):")
+    user = await get_user_async(update.effective_user.id)
+    model_prompt = "Отлично! Теперь введите модель (например, Rio):"  # Можно локализовать
+    await update.message.reply_text(model_prompt)
     return ADD_VEHICLE_ENTERING_MODEL
 
 async def add_vehicle_model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['vehicle_model'] = update.message.text
-    await update.message.reply_text("Теперь введите гос. номер автомобиля (например, А123БВ 777):")
+    plate_prompt = "Теперь введите гос. номер автомобиля (например, А123БВ 777):"
+    await update.message.reply_text(plate_prompt)
     return ADD_VEHICLE_ENTERING_PLATE
 
 async def add_vehicle_plate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -374,64 +520,79 @@ async def add_vehicle_plate(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     new_vehicle = await add_vehicle_async(user, brand, model, plate)
     context.user_data['selected_vehicle_id'] = new_vehicle.id
     
+    added_text = get_text(user, 'vehicle_added', brand=brand, model=model, plate=plate)
+    departure_text = get_text(user, 'enter_departure')
     await update.message.reply_text(
-        f"Автомобиль {brand} {model} ({plate}) успешно добавлен!\n\n"
-        "Теперь давайте создадим поездку.\n"
-        "Откуда вы отправляетесь? (например, Краснодар)"
+        f"{added_text}\n\n{departure_text}"
     )
     return CREATE_TRIP_ENTERING_DEPARTURE
 
 async def trip_enter_departure(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['trip_departure'] = update.message.text
-    await update.message.reply_text("Куда вы поедете? (например, Москва)")
+    user = await get_user_async(update.effective_user.id)
+    destination_text = get_text(user, 'enter_destination')
+    await update.message.reply_text(destination_text)
     return CREATE_TRIP_ENTERING_DESTINATION
 
 async def trip_enter_destination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['trip_destination'] = update.message.text
-    await update.message.reply_text("Когда? Введите дату и время отправления в формате ДД.ММ.ГГГГ ЧЧ:ММ (например, 15.09.2025 18:00)")
+    user = await get_user_async(update.effective_user.id)
+    time_text = get_text(user, 'enter_time')
+    await update.message.reply_text(time_text)
     return CREATE_TRIP_ENTERING_TIME
 
 async def trip_enter_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await get_user_async(update.effective_user.id)
     try:
         time_obj = datetime.strptime(update.message.text, '%d.%m.%Y %H:%M')
         if time_obj < datetime.now():
-             await update.message.reply_text("Нельзя создавать поездки в прошлом. Пожалуйста, введите будущую дату и время.")
+             past_text = get_text(user, 'invalid_time_past')
+             await update.message.reply_text(past_text)
              return CREATE_TRIP_ENTERING_TIME
         context.user_data['trip_time'] = update.message.text
     except ValueError:
-        await update.message.reply_text("Неверный формат. Пожалуйста, введите дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ")
+        format_text = get_text(user, 'invalid_format_time')
+        await update.message.reply_text(format_text)
         return CREATE_TRIP_ENTERING_TIME
         
-    await update.message.reply_text("Сколько свободных мест для пассажиров? (введите число)")
+    seats_text = get_text(user, 'enter_seats')
+    await update.message.reply_text(seats_text)
     return CREATE_TRIP_ENTERING_SEATS
 
 async def trip_enter_seats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await get_user_async(update.effective_user.id)
     try:
         seats = int(update.message.text)
-        if seats <= 0: raise ValueError
+        if seats <= 0 or seats > 7:
+            raise ValueError
         context.user_data['trip_seats'] = seats
     except ValueError:
-        await update.message.reply_text("Пожалуйста, введите целое положительное число.")
+        invalid_seats_text = get_text(user, 'invalid_seats')
+        await update.message.reply_text(invalid_seats_text)
         return CREATE_TRIP_ENTERING_SEATS
         
-    await update.message.reply_text("Укажите цену за одно место в рублях (введите число):")
+    price_text = get_text(user, 'enter_price')
+    await update.message.reply_text(price_text)
     return CREATE_TRIP_ENTERING_PRICE
 
 async def trip_enter_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await get_user_async(update.effective_user.id)
     try:
         price = float(update.message.text)
-        if price < 0: raise ValueError
+        if price < 50:
+            raise ValueError
         context.user_data['trip_price'] = price
     except ValueError:
-        await update.message.reply_text("Пожалуйста, введите положительное число.")
+        invalid_price_text = get_text(user, 'invalid_price')
+        await update.message.reply_text(invalid_price_text)
         return CREATE_TRIP_ENTERING_PRICE
         
-    user = await get_user_async(update.effective_user.id)
     vehicle_id = context.user_data.get('selected_vehicle_id')
     vehicle = await get_vehicle_by_id_async(vehicle_id)
     
     if not vehicle:
-        await update.message.reply_text("Критическая ошибка: автомобиль не найден по ID. Пожалуйста, попробуйте создать поездку заново.")
+        critical_text = get_text(user, 'critical_error_vehicle')
+        await update.message.reply_text(critical_text)
         return await show_main_menu(update, context)
 
     departure = context.user_data.get('trip_departure')
@@ -441,71 +602,74 @@ async def trip_enter_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     seats = context.user_data.get('trip_seats')
     price = context.user_data.get('trip_price')
     
-    await create_trip_async(user, vehicle, departure, destination, time_obj, seats, price)
+    try:
+        await create_trip_async(user, vehicle, departure, destination, time_obj, seats, price)
+        created_text = get_text(user, 'trip_created', departure=departure, destination=destination, time=time_str, vehicle=vehicle, seats=seats, price=price)
+        await update.message.reply_text(created_text, parse_mode='HTML')
+    except ValueError as e:
+        conflict_text = get_text(user, 'conflict_error')
+        await update.message.reply_text(conflict_text)
     
-    summary_text = (
-        f"✅ Поездка успешно создана!\n\n"
-        f"<b>Маршрут:</b> {departure} → {destination}\n"
-        f"<b>Время:</b> {time_str}\n"
-        f"<b>Авто:</b> {vehicle}\n"
-        f"<b>Мест:</b> {seats}\n"
-        f"<b>Цена:</b> {price} руб./место"
-    )
-    
-    await update.message.reply_text(summary_text, parse_mode='HTML')
     return await show_main_menu(update, context)
 
 # --- Поиск поездки ---
 async def find_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await get_user_async(update.effective_user.id)
+    start_text = get_text(user, 'find_trip_start')
     await update.message.reply_text(
-        "Начинаем поиск поездки. Откуда вы хотите поехать? (например, Москва)",
+        start_text,
         reply_markup=ReplyKeyboardRemove()
     )
     return FIND_TRIP_ENTERING_DEPARTURE
 
 async def find_trip_enter_departure(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['find_departure'] = update.message.text
-    await update.message.reply_text("Куда вы хотите поехать? (например, Санкт-Петербург)")
+    user = await get_user_async(update.effective_user.id)
+    dest_text = get_text(user, 'find_trip_destination')
+    await update.message.reply_text(dest_text)
     return FIND_TRIP_ENTERING_DESTINATION
 
 async def find_trip_enter_destination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['find_destination'] = update.message.text
-    await update.message.reply_text("На какую дату ищем? Введите в формате ДД.ММ.ГГГГ (например, 25.12.2025)")
+    user = await get_user_async(update.effective_user.id)
+    date_text = get_text(user, 'find_trip_date')
+    await update.message.reply_text(date_text)
     return FIND_TRIP_ENTERING_DATE
 
 async def find_trip_enter_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await get_user_async(update.effective_user.id)
     try:
         search_date_obj = datetime.strptime(update.message.text, '%d.%m.%Y').date()
     except ValueError:
-        await update.message.reply_text("Неверный формат. Пожалуйста, введите дату в формате ДД.ММ.ГГГГ")
+        invalid_date_text = get_text(user, 'invalid_date_format')
+        await update.message.reply_text(invalid_date_text)
         return FIND_TRIP_ENTERING_DATE
 
     departure = context.user_data.get('find_departure')
     destination = context.user_data.get('find_destination')
 
-    await update.message.reply_text(f"Ищу поездки из г. {departure} в г. {destination} на {update.message.text}...")
+    searching_text = get_text(user, 'searching_trips', departure=departure, destination=destination, date=update.message.text)
+    await update.message.reply_text(searching_text)
 
     trips = await find_trips_async(departure, destination, search_date_obj)
 
     if not trips:
-        await update.message.reply_text("К сожалению, на эту дату поездок не найдено. Попробуйте поискать на другую дату.")
+        no_trips_text = get_text(user, 'no_trips_found')
+        await update.message.reply_text(no_trips_text)
         return await show_main_menu(update, context)
 
-    await update.message.reply_text("Вот что удалось найти:")
+    found_text = get_text(user, 'trips_found')
+    await update.message.reply_text(found_text)
     for trip in trips:
         driver = trip.driver
         rating_text = f"{driver.average_rating:.1f} ⭐ ({driver.rating_count} оценок)"
-        trip_info = (
-            f"<b>Водитель:</b> {driver.name} ({rating_text})\n"
-            f"<b>Маршрут:</b> {trip.departure_location} → {trip.destination_location}\n"
-            f"<b>Время:</b> {trip.departure_time.strftime('%d.%m.%Y в %H:%M')}\n"
-            f"<b>Авто:</b> {trip.vehicle}\n"
-            f"<b>Свободных мест:</b> {trip.available_seats}\n"
-            f"<b>Цена:</b> {trip.price} руб."
-        )
+        dep = trip.departure_location
+        dest = trip.destination_location
+        time_str = trip.departure_time.strftime('%d.%m.%Y в %H:%M')
+        info_text = get_text(user, 'trip_info', driver=driver.name, rating=rating_text, dep=dep, dest=dest, time=time_str, vehicle=trip.vehicle, seats=trip.available_seats, price=trip.price)
         keyboard = [[InlineKeyboardButton("✅ Забронировать", callback_data=f"book_trip_{trip.id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(trip_info, parse_mode='HTML', reply_markup=reply_markup)
+        await update.message.reply_text(info_text, parse_mode='HTML', reply_markup=reply_markup)
     
     return MAIN_MENU
 
@@ -517,47 +681,53 @@ async def book_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     trip_id = int(query.data.split("_")[-1])
     trip = await get_trip_by_id_async(trip_id)
 
-    if not trip or trip.available_seats == 0:
-        await query.edit_message_text("Извините, эта поездка уже недоступна или все места заняты.")
+    if not trip or trip.status != Trip.Status.ACTIVE or trip.available_seats == 0:
+        user = await get_user_async(update.effective_user.id)
+        unavailable_text = get_text(user, 'book_trip_unavailable')
+        await query.edit_message_text(unavailable_text)
         return MAIN_MENU
     
     context.user_data['booking_trip_id'] = trip_id
     
+    user = await get_user_async(update.effective_user.id)
+    seats_text = get_text(user, 'select_seats_for_booking', dep=trip.departure_location, dest=trip.destination_location, seats=trip.available_seats)
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"Вы выбрали поездку {trip.departure_location} - {trip.destination_location}.\n\n"
-             f"Сколько мест вы хотите забронировать? (Свободно: {trip.available_seats})",
+        text=seats_text,
     )
     return BOOK_TRIP_ENTERING_SEATS
 
 async def book_trip_enter_seats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await get_user_async(update.effective_user.id)
     try:
         seats_to_book = int(update.message.text)
         if seats_to_book <= 0: raise ValueError
     except ValueError:
-        await update.message.reply_text("Пожалуйста, введите целое положительное число.")
+        invalid_booking_text = get_text(user, 'invalid_seats_booking')
+        await update.message.reply_text(invalid_booking_text)
         return BOOK_TRIP_ENTERING_SEATS
         
     trip_id = context.user_data.get('booking_trip_id')
     trip = await get_trip_by_id_async(trip_id)
-    passenger = await get_user_async(update.effective_user.id)
+    passenger = user
     
     if not trip or not passenger:
-        await update.message.reply_text("Произошла ошибка, не удалось найти поездку или ваш профиль.")
+        error_text = "Произошла ошибка, не удалось найти поездку или ваш профиль."
+        await update.message.reply_text(error_text)
         return await show_main_menu(update, context)
 
     booking, error = await create_booking_async(passenger, trip, seats_to_book)
 
     if error:
-        await update.message.reply_text(f"Ошибка бронирования: {error}")
+        if error == "booking_unavailable":
+            unavailable_text = get_text(user, 'book_trip_unavailable')
+            await update.message.reply_text(unavailable_text)
+        else:
+            error_text = get_text(user, 'booking_error', error=error)
+            await update.message.reply_text(error_text)
     else:
         # Уведомляем водителя
-        driver_message = (
-            f"🔔 Новое бронирование!\n\n"
-            f"Пассажир: {passenger.name} ({passenger.phone_number})\n"
-            f"Забронировал(а) мест: {seats_to_book}\n"
-            f"Поездка: {trip}"
-        )
+        driver_message = get_text(None, 'driver_notification', passenger=passenger.name, phone=passenger.phone_number, seats=seats_to_book, trip=trip)  # Use ru for admin
         driver_keyboard = [[InlineKeyboardButton("💬 Связаться с пассажиром", callback_data=f"contact_user_{booking.id}")]]
         await context.bot.send_message(
             chat_id=trip.driver.telegram_id, 
@@ -567,13 +737,10 @@ async def book_trip_enter_seats(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Отвечаем пассажиру
         total_cost = seats_to_book * trip.price
-        passenger_message = (
-            f"✅ Поздравляем! Вы успешно забронировали {seats_to_book} мест(а)!\n"
-            f"Общая стоимость: {total_cost} руб."
-        )
+        success_text = get_text(user, 'booking_success', seats=seats_to_book, cost=total_cost)
         passenger_keyboard = [[InlineKeyboardButton("💬 Связаться с водителем", callback_data=f"contact_user_{booking.id}")]]
         await update.message.reply_text(
-            passenger_message, 
+            success_text, 
             reply_markup=InlineKeyboardMarkup(passenger_keyboard)
         )
 
@@ -586,21 +753,20 @@ async def my_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     trips = await get_trips_for_driver_async(driver)
     
     if not trips:
-        await update.message.reply_text("У вас пока нет созданных поездок.")
+        no_trips_text = get_text(driver, 'no_trips')
+        await update.message.reply_text(no_trips_text)
         return MAIN_MENU
         
-    await update.message.reply_text("Ваши активные поездки:")
+    my_trips_text = get_text(driver, 'my_trips')
+    await update.message.reply_text(my_trips_text)
     active_trips_found = False
     for trip in trips:
         if trip.status == Trip.Status.ACTIVE:
             active_trips_found = True
-            trip_info = (
-                f"<b>📍 Активна</b>\n"
-                f"<b>Маршрут:</b> {trip.departure_location} → {trip.destination_location}\n"
-                f"<b>Время:</b> {trip.departure_time.strftime('%d.%m.%Y в %H:%M')}\n"
-                f"<b>Свободных мест:</b> {trip.available_seats}\n"
-                f"<b>Цена:</b> {trip.price} руб./место"
-            )
+            dep = trip.departure_location
+            dest = trip.destination_location
+            time_str = trip.departure_time.strftime('%d.%m.%Y в %H:%M')
+            info_text = get_text(driver, 'trip_active_info', dep=dep, dest=dest, time=time_str, seats=trip.available_seats, price=trip.price)
             
             keyboard = [[
                 InlineKeyboardButton("✅ Завершить", callback_data=f"complete_trip_{trip.id}"),
@@ -608,10 +774,11 @@ async def my_trips(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_trip_{trip.id}")
             ]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(trip_info, parse_mode='HTML', reply_markup=reply_markup)
+            await update.message.reply_text(info_text, parse_mode='HTML', reply_markup=reply_markup)
     
     if not active_trips_found:
-        await update.message.reply_text("У вас нет активных поездок для управления.")
+        no_active_text = get_text(driver, 'no_active_trips')
+        await update.message.reply_text(no_active_text)
         
     return MAIN_MENU
 
@@ -621,22 +788,20 @@ async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     bookings = await get_bookings_for_passenger_async(passenger, active_only=True)
 
     if not bookings:
-        await update.message.reply_text("У вас пока нет активных бронирований.")
+        no_bookings_text = get_text(passenger, 'no_bookings')
+        await update.message.reply_text(no_bookings_text)
         return MAIN_MENU
 
-    await update.message.reply_text("Ваши активные бронирования:")
+    my_bookings_text = get_text(passenger, 'my_bookings')
+    await update.message.reply_text(my_bookings_text)
     for booking in bookings:
         trip = booking.trip
         total_cost = booking.seats_booked * trip.price
-        booking_info = (
-            f"<b>Маршрут:</b> {trip.departure_location} → {trip.destination_location}\n"
-            f"<b>Время:</b> {trip.departure_time.strftime('%d.%m.%Y в %H:%M')}\n"
-            f"<b>Водитель:</b> {trip.driver.name}, тел: {trip.driver.phone_number}\n"
-            f"<b>Авто:</b> {trip.vehicle}\n"
-            f"<b>Забронировано мест:</b> {booking.seats_booked}\n"
-            f"<b>Общая стоимость:</b> {total_cost} руб."
-        )
-        await update.message.reply_text(booking_info, parse_mode='HTML')
+        dep = trip.departure_location
+        dest = trip.destination_location
+        time_str = trip.departure_time.strftime('%d.%m.%Y в %H:%M')
+        info_text = get_text(passenger, 'booking_info', dep=dep, dest=dest, time=time_str, driver=trip.driver.name, phone=trip.driver.phone_number, vehicle=trip.vehicle, seats=booking.seats_booked, cost=total_cost)
+        await update.message.reply_text(info_text, parse_mode='HTML')
 
     return MAIN_MENU
 
@@ -647,45 +812,40 @@ async def trip_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if user.role == User.Role.DRIVER:
         trips = await get_trips_for_driver_async(user)
         if not trips:
-            await update.message.reply_text("У вас нет поездок в истории.")
+            no_history_text = get_text(user, 'no_history')
+            await update.message.reply_text(no_history_text)
             return MAIN_MENU
         
-        await update.message.reply_text("История ваших поездок:")
+        history_text = get_text(user, 'trip_history')
+        await update.message.reply_text(history_text)
         for trip in trips:
             if trip.status in [Trip.Status.COMPLETED, Trip.Status.CANCELED]:
-                status_text = "✅ Завершена" if trip.status == Trip.Status.COMPLETED else "❌ Отменена"
-                trip_info = (
-                    f"<b>{status_text}</b>\n"
-                    f"<b>Маршрут:</b> {trip.departure_location} → {trip.destination_location}\n"
-                    f"<b>Время:</b> {trip.departure_time.strftime('%d.%m.%Y в %H:%M')}\n"
-                    f"<b>Авто:</b> {trip.vehicle}\n"
-                    f"<b>Мест:</b> {trip.available_seats}\n"
-                    f"<b>Цена:</b> {trip.price} руб./место"
-                )
-                await update.message.reply_text(trip_info, parse_mode='HTML')
+                status_text = get_text(user, 'history_completed' if trip.status == Trip.Status.COMPLETED else 'history_cancelled')
+                dep = trip.departure_location
+                dest = trip.destination_location
+                time_str = trip.departure_time.strftime('%d.%m.%Y в %H:%M')
+                info_text = get_text(user, 'history_trip_info', status=status_text, dep=dep, dest=dest, time=time_str, vehicle=trip.vehicle, seats=trip.available_seats, price=trip.price)
+                await update.message.reply_text(info_text, parse_mode='HTML')
     
     elif user.role == User.Role.PASSENGER:
         bookings = await get_bookings_for_passenger_async(user, active_only=False)
         if not bookings:
-            await update.message.reply_text("У вас нет поездок в истории.")
+            no_history_text = get_text(user, 'no_history')
+            await update.message.reply_text(no_history_text)
             return MAIN_MENU
         
-        await update.message.reply_text("История ваших поездок:")
+        history_text = get_text(user, 'trip_history')
+        await update.message.reply_text(history_text)
         for booking in bookings:
             trip = booking.trip
             if trip.status in [Trip.Status.COMPLETED, Trip.Status.CANCELED]:
-                status_text = "✅ Завершена" if trip.status == Trip.Status.COMPLETED else "❌ Отменена"
+                status_text = get_text(user, 'history_completed' if trip.status == Trip.Status.COMPLETED else 'history_cancelled')
                 total_cost = booking.seats_booked * trip.price
-                booking_info = (
-                    f"<b>{status_text}</b>\n"
-                    f"<b>Маршрут:</b> {trip.departure_location} → {trip.destination_location}\n"
-                    f"<b>Время:</b> {trip.departure_time.strftime('%d.%m.%Y в %H:%M')}\n"
-                    f"<b>Водитель:</b> {trip.driver.name}, тел: {trip.driver.phone_number}\n"
-                    f"<b>Авто:</b> {trip.vehicle}\n"
-                    f"<b>Забронировано мест:</b> {booking.seats_booked}\n"
-                    f"<b>Общая стоимость:</b> {total_cost} руб."
-                )
-                await update.message.reply_text(booking_info, parse_mode='HTML')
+                dep = trip.departure_location
+                dest = trip.destination_location
+                time_str = trip.departure_time.strftime('%d.%m.%Y в %H:%M')
+                info_text = get_text(user, 'history_booking_info', status=status_text, dep=dep, dest=dest, time=time_str, driver=trip.driver.name, phone=trip.driver.phone_number, vehicle=trip.vehicle, seats=booking.seats_booked, cost=total_cost)
+                await update.message.reply_text(info_text, parse_mode='HTML')
 
     return MAIN_MENU
 
@@ -696,13 +856,16 @@ async def edit_trip_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     trip_id = int(query.data.split("_")[-1])
     context.user_data['editing_trip_id'] = trip_id
 
+    user = await get_user_async(update.effective_user.id)
+    select_field_text = get_text(user, 'select_field_to_edit')
+
     keyboard = [
         [InlineKeyboardButton("Время отправления", callback_data="edit_field_departure_time")],
         [InlineKeyboardButton("Количество мест", callback_data="edit_field_available_seats")],
         [InlineKeyboardButton("Цену", callback_data="edit_field_price")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("Что вы хотите изменить?", reply_markup=reply_markup)
+    await query.edit_message_text(select_field_text, reply_markup=reply_markup)
     return EDIT_TRIP_SELECT_FIELD
 
 async def edit_trip_select_field(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -722,12 +885,13 @@ async def edit_trip_select_field(update: Update, context: ContextTypes.DEFAULT_T
     
     context.user_data['editing_field'] = field_to_edit
     
+    user = await get_user_async(update.effective_user.id)
     field_map = {
         "departure_time": "новое время отправления в формате ДД.ММ.ГГГГ ЧЧ:ММ",
         "available_seats": "новое количество свободных мест",
         "price": "новую цену за место",
     }
-    prompt_text = f"Пожалуйста, введите {field_map[field_to_edit]}:"
+    prompt_text = get_text(user, 'enter_new_value', prompt=field_map[field_to_edit])
     
     await query.edit_message_text(prompt_text)
     return EDIT_TRIP_ENTERING_VALUE
@@ -736,9 +900,11 @@ async def edit_trip_enter_value(update: Update, context: ContextTypes.DEFAULT_TY
     trip_id = context.user_data.get('editing_trip_id')
     field = context.user_data.get('editing_field')
     new_value_str = update.message.text
+    user = await get_user_async(update.effective_user.id)
     
     if not trip_id or not field:
-        await update.message.reply_text("Ошибка: данные для редактирования не найдены.")
+        error_text = get_text(user, 'edit_error')
+        await update.message.reply_text(error_text)
         context.user_data.pop('editing_trip_id', None)
         context.user_data.pop('editing_field', None)
         return await show_main_menu(update, context)
@@ -747,7 +913,8 @@ async def edit_trip_enter_value(update: Update, context: ContextTypes.DEFAULT_TY
         if field == 'departure_time':
             new_value = datetime.strptime(new_value_str, '%d.%m.%Y %H:%M')
             if new_value < datetime.now():
-                await update.message.reply_text("Нельзя установить дату в прошлом. Попробуйте еще раз.")
+                past_error_text = get_text(user, 'past_date_error')
+                await update.message.reply_text(past_error_text)
                 return EDIT_TRIP_ENTERING_VALUE
         elif field == 'available_seats':
             new_value = int(new_value_str)
@@ -761,11 +928,13 @@ async def edit_trip_enter_value(update: Update, context: ContextTypes.DEFAULT_TY
             context.user_data.pop('editing_field', None)
             return await show_main_menu(update, context)
     except ValueError:
-        await update.message.reply_text("Неверный формат. Пожалуйста, попробуйте еще раз.")
+        invalid_value_text = get_text(user, 'invalid_value')
+        await update.message.reply_text(invalid_value_text)
         return EDIT_TRIP_ENTERING_VALUE
 
     await update_trip_field_async(trip_id, field, new_value)
-    await update.message.reply_text("✅ Данные поездки успешно обновлены!")
+    success_text = get_text(user, 'edit_success')
+    await update.message.reply_text(success_text)
     
     context.user_data.pop('editing_trip_id', None)
     context.user_data.pop('editing_field', None)
@@ -779,11 +948,13 @@ async def complete_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     trip = await get_trip_by_id_async(trip_id)
     if not trip:
-        await query.edit_message_text(text="Не удалось найти поездку.")
+        not_found_text = get_text(None, 'trip_not_found')  # ru
+        await query.edit_message_text(text=not_found_text)
         return MAIN_MENU
 
     await update_trip_status_async(trip.id, Trip.Status.COMPLETED)
-    await query.edit_message_text(text=f"Поездка {trip} завершена.")
+    completed_text = get_text(None, 'trip_completed', trip=trip)  # ru
+    await query.edit_message_text(text=completed_text)
     
     await start_rating_process(context.bot, trip)
         
@@ -797,17 +968,20 @@ async def cancel_trip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     trip = await update_trip_status_async(trip_id, Trip.Status.CANCELED)
 
     if trip:
-        await query.edit_message_text(text=f"Поездка {trip} отменена.")
+        cancelled_text = get_text(None, 'trip_cancelled', trip=trip)  # ru
+        await query.edit_message_text(text=cancelled_text)
     else:
-        await query.edit_message_text(text="Не удалось найти поездку.")
+        not_found_text = get_text(None, 'trip_not_found')  # ru
+        await query.edit_message_text(text=not_found_text)
 
     return MAIN_MENU
 
 # --- Система поддержки ---
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await get_user_async(update.effective_user.id)
+    start_text = get_text(user, 'support_start')
     await update.message.reply_text(
-        "Опишите вашу проблему или вопрос одним сообщением. "
-        "Мы сохраним ваше обращение, и администратор свяжется с вами.",
+        start_text,
         reply_markup=ReplyKeyboardRemove()
     )
     logger.info(f"User {update.effective_user.id} entered support_start")
@@ -816,12 +990,18 @@ async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def support_enter_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user_async(update.effective_user.id)
     message_text = update.message.text
-    logger.info(f"User {user.telegram_id} submitted support ticket: {message_text}")
     
+    if len(message_text) > 1000:
+        too_long_text = get_text(user, 'support_message_too_long')
+        await update.message.reply_text(too_long_text)
+        return SUPPORT_ENTERING_MESSAGE
+        
+    logger.info(f"User {user.telegram_id} submitted support ticket: {message_text}")
     await create_support_ticket_async(user, message_text)
     
+    submitted_text = get_text(user, 'support_submitted')
     await update.message.reply_text(
-        "Спасибо! Ваше обращение принято. Администратор скоро его рассмотрит."
+        submitted_text
     )
     return await show_main_menu(update, context)
 
@@ -840,9 +1020,10 @@ async def start_rating_process(bot, trip):
             if not rating_exists:
                 keyboard = [[InlineKeyboardButton(f"{i} ⭐", callback_data=f"rate_{trip.id}_{driver.id}_{passenger.id}_{i}") for i in range(1, 6)]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
+                rate_text = get_text(driver, 'rate_passenger', passenger=passenger.name)
                 await bot.send_message(
                     chat_id=driver.telegram_id,
-                    text=f"Пожалуйста, оцените поездку с пассажиром {passenger.name}:",
+                    text=rate_text,
                     reply_markup=reply_markup
                 )
 
@@ -851,9 +1032,10 @@ async def start_rating_process(bot, trip):
         if not rating_exists:
             keyboard = [[InlineKeyboardButton(f"{i} ⭐", callback_data=f"rate_{trip.id}_{passenger.id}_{driver.id}_{i}") for i in range(1, 6)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
+            rate_text = get_text(passenger, 'rate_driver', driver=driver.name)
             await bot.send_message(
                 chat_id=passenger.telegram_id,
-                text=f"Поездка с водителем {driver.name} завершена. Пожалуйста, оцените его:",
+                text=rate_text,
                 reply_markup=reply_markup
             )
 
@@ -871,9 +1053,13 @@ async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rater = await sync_to_async(User.objects.get)(id=rater_id)
     rated_user = await sync_to_async(User.objects.get)(id=rated_user_id)
 
-    await add_rating_and_update_user_async(rater, rated_user, trip, score)
-
-    await query.edit_message_text(text=f"Спасибо! Вы поставили оценку {score} ⭐ пользователю {rated_user.name}.")
+    try:
+        await add_rating_and_update_user_async(rater, rated_user, trip, score)
+        thanks_text = get_text(rater, 'rating_thanks', score=score, user=rated_user.name)
+        await query.edit_message_text(text=thanks_text)
+    except IntegrityError:
+        already_text = get_text(rater, 'already_rated')
+        await query.edit_message_text(text=already_text)
 
 # --- Анонимный чат ---
 async def start_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -885,7 +1071,8 @@ async def start_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     booking = await get_booking_by_id_async(booking_id)
     if not booking:
-        await query.edit_message_text("Ошибка: бронирование не найдено.")
+        chat_error_text = get_text(None, 'chat_error')  # ru
+        await query.edit_message_text(chat_error_text)
         return MAIN_MENU
 
     if user_id == booking.passenger.telegram_id:
@@ -895,42 +1082,52 @@ async def start_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         chat_partner = booking.passenger
         partner_role = "пассажиром"
     else:
-        await query.edit_message_text("Ошибка: вы не участник этого бронирования.")
+        not_participant_text = get_text(None, 'not_participant')  # ru
+        await query.edit_message_text(not_participant_text)
         return MAIN_MENU
     
     context.user_data['chat_partner_id'] = chat_partner.telegram_id
     
+    started_text = get_text(None, 'chat_started', role=partner_role, name=chat_partner.name)  # ru
     await query.edit_message_text(
-        f"Вы вошли в чат с {partner_role} {chat_partner.name}.\n"
-        "Все, что вы напишете, будет переслано. Чтобы выйти, отправьте /cancel."
+        started_text
     )
     return IN_CHAT
 
 async def forward_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_partner_id = context.user_data.get('chat_partner_id')
     if not chat_partner_id:
-        await update.message.reply_text("Ошибка: чат не инициализирован.")
+        not_initialized_text = get_text(None, 'chat_not_initialized')  # ru
+        await update.message.reply_text(not_initialized_text)
         return await show_main_menu(update, context)
     
     message_text = update.message.text
+    if len(message_text) > 1000:
+        too_long_text = get_text(None, 'message_too_long')  # ru
+        await update.message.reply_text(too_long_text)
+        return IN_CHAT
+    
     user = await get_user_async(update.effective_user.id)
     
+    sent_text = get_text(user, 'message_sent')
     await context.bot.send_message(
         chat_id=chat_partner_id,
         text=f"Сообщение от {user.name}:\n{message_text}"
     )
-    await update.message.reply_text("Сообщение отправлено!")
+    await update.message.reply_text(sent_text)
     return IN_CHAT
 
 async def cancel_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop('chat_partner_id', None)
-    await update.message.reply_text("Чат завершен.")
+    cancelled_text = get_text(None, 'chat_cancelled')  # ru
+    await update.message.reply_text(cancelled_text)
     return await show_main_menu(update, context)
 
 # --- Вспомогательные обработчики ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop('chat_partner_id', None)
-    await update.message.reply_text("Действие отменено.")
+    cancelled_text = get_text(None, 'action_cancelled')  # ru
+    await update.message.reply_text(cancelled_text)
     return await show_main_menu(update, context)
 
 # --- ГЛАВНЫЙ КЛАСС ЗАПУСКА ---
