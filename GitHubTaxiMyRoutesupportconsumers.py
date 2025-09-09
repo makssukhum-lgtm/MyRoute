@@ -132,3 +132,4 @@ class ChatConsumer(AsyncWebsocketConsumer):
             'message': message,
             'sender': sender
         }))
+

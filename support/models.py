@@ -1,5 +1,3 @@
-# support/models.py
-
 from django.db import models
 from users.models import User
 
@@ -9,7 +7,7 @@ class SupportTicket(models.Model):
         CLOSED = 'CLOSED', 'Закрыт'
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='support_tickets')
-    message = models.TextField(verbose_name="Текст обращения") # <-- Наше недостающее поле
+    message = models.TextField(verbose_name="Текст обращения")
     status = models.CharField(
         max_length=10,
         choices=Status.choices,
@@ -25,9 +23,10 @@ class SupportTicket(models.Model):
     class Meta:
         verbose_name = "Обращение в поддержку"
         verbose_name_plural = "Обращения в поддержку"
-        ordering = ['-created_at']
 
 class ChatMessage(models.Model):
+    # related_name='messages' - это критически важно.
+    # Именно по этому имени view находит все сообщения.
     ticket = models.ForeignKey(SupportTicket, on_delete=models.CASCADE, related_name='messages')
     author = models.ForeignKey(User, on_delete=models.CASCADE, related_name='chat_messages')
     message = models.TextField()
@@ -38,3 +37,4 @@ class ChatMessage(models.Model):
 
     class Meta:
         ordering = ['timestamp']
+
